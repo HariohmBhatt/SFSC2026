@@ -1,0 +1,46 @@
+{
+  "verified_at": "2026-08-30T16:33:19Z",
+  "kernel": "hariohmbhatt/sfsc-p100-smoke-test",
+  "kernel_version": 5,
+  "selected_runtime": {
+    "status": "passed",
+    "environment": "kaggle-default",
+    "internet_enabled": false,
+    "framework": "tensorflow",
+    "framework_version": "2.20.0",
+    "python": "3.12.13",
+    "gpu": "Tesla P100-PCIE-16GB",
+    "tensorflow_device_memory_mb": 15511,
+    "driver_version": "580.159.04",
+    "driver_cuda_version": "13.0",
+    "competition_data_mounted": true,
+    "competition_mount": "/kaggle/input/competitions/filament-segmentation-2026",
+    "matrix_shape": [4096, 4096],
+    "matrix_operation_seconds": 0.239
+  },
+  "default_pytorch_test": {
+    "status": "failed",
+    "torch": "2.10.0+cu128",
+    "torchvision": "0.25.0+cu128",
+    "required_architecture": "sm_60",
+    "compiled_architectures": [
+      "sm_70",
+      "sm_75",
+      "sm_80",
+      "sm_86",
+      "sm_90",
+      "sm_100",
+      "sm_120"
+    ],
+    "error": "PyTorch does not include sm_60"
+  },
+  "compatible_pytorch_control": {
+    "status": "passed",
+    "torch": "2.7.1+cu126",
+    "torchvision": "0.22.1+cu126",
+    "compiled_architecture": "sm_60",
+    "install_seconds": 224.064,
+    "matrix_operation_seconds": 0.171,
+    "selected": false
+  }
+}

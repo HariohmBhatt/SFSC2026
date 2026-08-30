@@ -32,14 +32,9 @@ uv run pytest
 uv run sfsc-audit --data-root SFSCDataset
 ```
 
-Install model-training packages only in an environment that needs them:
-
-```bash
-uv sync --extra dev --extra train
-```
-
-On Kaggle, use its preinstalled CUDA-enabled PyTorch rather than replacing it
-blindly. Record the assigned GPU and package versions at the start of every run.
+Model training and inference run only in the private Kaggle P100 kernel. The
+verified zero-install runtime uses Kaggle's preinstalled TensorFlow; see
+[`kaggle/README.md`](kaggle/README.md). Do not install local CUDA packages.
 
 ## Repository Layout
 

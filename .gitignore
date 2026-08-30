@@ -1,0 +1,25 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Competition data must not be committed.
+SFSCDataset/
+data/
+
+# Generated model and experiment outputs.
+artifacts/
+checkpoints/
+outputs/
+wandb/
+*.pt
+*.pth
+*.onnx
+
+# Local notebooks; reviewed competition notebooks may be committed explicitly.
+.ipynb_checkpoints/

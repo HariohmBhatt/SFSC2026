@@ -1,0 +1,311 @@
+{
+  "base_filters": 24,
+  "batch_size": 2,
+  "calibration_images_per_site": 4,
+  "checkpoint_images_per_site": 4,
+  "crop_size": 768,
+  "default_postprocess": {
+    "foreground": 0.5,
+    "interior": 0.5,
+    "minimum_area": 32
+  },
+  "epochs": 40,
+  "foreground_probability": 0.5,
+  "foreground_thresholds": [
+    0.35,
+    0.5,
+    0.65
+  ],
+  "inference_stride": 512,
+  "interior_thresholds": [
+    0.35,
+    0.5
+  ],
+  "learning_rate": 0.0001,
+  "minimum_areas": [
+    8,
+    32,
+    64
+  ],
+  "minimum_learning_rate": 5e-06,
+  "save_validation_probabilities": true,
+  "scale_range": [
+    0.85,
+    1.15
+  ],
+  "steps_per_epoch": 200,
+  "training_time_limit_hours": 3.0,
+  "tta_flips": true,
+  "validation_every": 5,
+  "weight_decay": 0.0001,
+  "positive_weights": [
+    1.0,
+    1.0,
+    2.0
+  ],
+  "initial_checkpoint": true,
+  "postprocess_grid": [
+    {
+      "mode": "hysteresis",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "hysteresis",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.3,
+      "confidence": 0.55,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.45,
+      "confidence": 0.65,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.55,
+      "confidence": 0.75,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 64,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 128,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 192,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "watershed",
+      "foreground": 0.65,
+      "confidence": 0.85,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32
+    },
+    {
+      "mode": "legacy",
+      "foreground": 0.65,
+      "interior": 0.5,
+      "minimum_area": 64
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "run_id": "precision-v2-20260906-052615",
+  "kernel": "hariohmbhatt/sfsc-precision-v2-20260906-052615",
+  "url": "https://www.kaggle.com/code/hariohmbhatt/sfsc-precision-v2-20260906-052615",
+  "directory": "outputs/precision-v2-20260906-052615",
+  "spec_hash": "6b354261b87683825d1d894f345c707098f4e9331cda58e9e8d36135d08793f1",
+  "status": "completed",
+  "launch_returncode": 0,
+  "remote_status": "hariohmbhatt/sfsc-precision-v2-20260906-052615 has status \"KernelWorkerStatus.COMPLETE\"",
+  "checked_at": "2026-09-06T11:32:37.448628+00:00",
+  "latest_event": {
+    "event": "training_step",
+    "unix_time": 1788674325.4958062,
+    "epoch": 17,
+    "step": 100,
+    "loss": 0.6162025928497314,
+    "peak_allocator_gb": 13.06435712,
+    "elapsed_seconds": 1885.562452225
+  },
+  "experiment": {
+    "model": "filament-precision",
+    "train_images": 495,
+    "validation_images": 106,
+    "calibration_images": 24,
+    "epochs": 40,
+    "steps_per_epoch": 200,
+    "crop_size": 768,
+    "batch_size": 2,
+    "training_cap_hours": 3,
+    "kernel_timeout_hours": 9,
+    "gpu": "Tesla P100",
+    "upstream_training_scope": "train only",
+    "internal_test_reuse": false,
+    "full_validation_pq": null
+  },
+  "verification": {
+    "repository_tests_passed": 66,
+    "focused_geometry_runtime_tests_passed": 24,
+    "ruff": "passed"
+  },
+  "baseline_calibration": {
+    "event": "baseline_calibrated",
+    "unix_time": 1788672804.07416,
+    "pq": 0.36782824533754294,
+    "totals": [
+      93.24446019306714,
+      139.0,
+      155.0,
+      74.0
+    ],
+    "parameters": {
+      "confidence": 0.85,
+      "foreground": 0.65,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32,
+      "mode": "hysteresis"
+    }
+  },
+  "last_optimizer_step": {
+    "event": "training_step",
+    "unix_time": 1788674325.4958062,
+    "epoch": 17,
+    "step": 100,
+    "loss": 0.6162025928497314,
+    "peak_allocator_gb": 13.06435712,
+    "elapsed_seconds": 1885.562452225
+  },
+  "preliminary_comparison": {
+    "scope": "Same 24 validation calibration images; tuned development comparison, not full validation or leaderboard",
+    "filenames_verified_equal": true,
+    "unchanged_weights": true,
+    "previous_recipe_pq": 0.2892992418937738,
+    "recalibrated_pq": 0.36782824533754294,
+    "old_parameters": {
+      "foreground": 0.65,
+      "interior": 0.5,
+      "minimum_area": 64
+    },
+    "new_parameters": {
+      "confidence": 0.85,
+      "foreground": 0.65,
+      "interior": 0.5,
+      "minimum_area": 256,
+      "minimum_seed_area": 32,
+      "mode": "hysteresis"
+    }
+  },
+  "validation_pq": 0.38117396647989166,
+  "peak_vram_gb": 13.06435712,
+  "report_path": "outputs/precision-v2-20260906-052615/results/experiment/report.json"
+}

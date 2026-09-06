@@ -1,0 +1,11 @@
+{
+  "research_workers": 3,
+  "approaches_per_worker": 2,
+  "seed": 2026,
+  "max_vram_gb": 14.0,
+  "max_training_hours": 9.0,
+  "reference_model_mb": 500.0,
+  "weights": {"pq_potential": 0.5, "complexity": 0.1, "training_time": 0.2, "vram": 0.1, "model_size": 0.1},
+  "worker_timeout_seconds": 1800,
+  "workers": {"research": [], "review": [], "implementation": []}
+}

@@ -82,3 +82,12 @@ round-trip-check every submitted COCO RLE.
 - Use one configuration per run and store metrics in machine-readable form.
 - Tag serious baselines so leaderboard submissions map back to exact code.
 - Do not tune against the internal test set or the public leaderboard.
+
+## Iterative System
+
+The Notebook SFSC2026 workflow is executable through `sfsc-system`. Follow
+[the system guide](system/README.md) for fleet connections, source handoffs,
+Kaggle execution and recovery. The local environment includes the optional
+`sfsc-model-worker` OpenAI adapter with no additional package dependency.
+Filament ResUNet is selected and launched on Kaggle. Local tests cover its
+geometry and the orchestration; measured training evidence is saved separately.

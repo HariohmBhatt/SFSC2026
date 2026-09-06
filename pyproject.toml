@@ -23,6 +23,9 @@ dev = [
 
 [project.scripts]
 sfsc-audit = "sfsc.audit:main"
+sfsc-system = "sfsc.cli:main"
+sfsc-model-worker = "sfsc.model_worker:main"
+sfsc-watch = "sfsc.watch:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sfsc"]
@@ -37,3 +40,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# The embedded HTML/JS/CSS dashboard template has inherently long lines.
+"src/sfsc/watch.py" = ["E501"]

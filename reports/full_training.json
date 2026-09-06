@@ -1,0 +1,23 @@
+{
+  "run_id": "precision-full-20260906-121101",
+  "kernel": "hariohmbhatt/sfsc-precision-full-20260906-121101",
+  "directory": "outputs/precision-full-20260906-121101",
+  "spec_hash": "be2fdb737124e5a6a85e3760086f06a69a10d4be844cc4a4d7edd8bcac637749",
+  "status": "submitted",
+  "submission_authorized": true,
+  "frozen_precision_epoch": 15,
+  "train_images": 601,
+  "baseline_checkpoint_hash": "8b574576663abb60a6ad2039f3d19b22de803898a2172fb09180a1db574992c9",
+  "launch_returncode": 0,
+  "remote_status": "hariohmbhatt/sfsc-precision-full-20260906-121101 has status \"KernelWorkerStatus.RUNNING\"",
+  "checked_at": "2026-09-06T12:27:51.380729+00:00",
+  "latest_event": {
+    "event": "training_step",
+    "unix_time": 1788697671.1913788,
+    "epoch": 13,
+    "step": 100,
+    "loss": 0.49481579661369324,
+    "peak_allocator_gb": 11.513546752,
+    "elapsed_seconds": 953.8194853499999
+  }
+}

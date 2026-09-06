@@ -23,3 +23,13 @@ wandb/
 
 # Local notebooks; reviewed competition notebooks may be committed explicitly.
 .ipynb_checkpoints/
+
+# Durable local orchestration state and private worker logs.
+.sfsc/
+*.keras
+*.h5
+*.npy
+*.npz
+
+# Scraped competition activity: cached notebook sources and watch state.
+reports/competition_watch/

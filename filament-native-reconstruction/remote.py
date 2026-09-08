@@ -7,6 +7,7 @@ import json
 import math
 import time
 import traceback
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 
@@ -228,11 +229,13 @@ class NativeDataset(Dataset):
         global_tensor = resized_global_inputs(image, seed, bounds)
         if rng.random() < 0.5:
             local = local[:, :, ::-1].copy()
+            local[3] *= -1
             target_tile = target_tile[:, ::-1].copy()
             valid = valid[:, ::-1].copy()
             global_tensor = global_tensor[:, :, ::-1].copy()
         if rng.random() < 0.5:
             local = local[:, ::-1, :].copy()
+            local[4] *= -1
             target_tile = target_tile[::-1, :].copy()
             valid = valid[::-1, :].copy()
             global_tensor = global_tensor[:, ::-1, :].copy()
@@ -285,6 +288,8 @@ class NativeRefiner(nn.Module):
         self.up2, self.dec2 = nn.ConvTranspose2d(128, 64, 2, 2), GroupNormBlock(128, 64)
         self.up1, self.dec1 = nn.ConvTranspose2d(64, 32, 2, 2), GroupNormBlock(96, 32)
         self.up0, self.head = nn.ConvTranspose2d(32, 16, 2, 2), nn.Conv2d(16, 1, 1)
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
         self.register_buffer("local_mean", torch.tensor([0.485, 0, 0, 0, 0, 0]).view(1, 6, 1, 1))
         self.register_buffer("local_std", torch.tensor([0.229, 1, 1, 1, 1, 1]).view(1, 6, 1, 1))
         self.register_buffer("global_mean", torch.tensor([0.485, 0.456, 0.0]).view(1, 3, 1, 1))
@@ -308,6 +313,8 @@ class NativeRefiner(nn.Module):
         return self
 
     def forward(self, local, global_tensor):
+        prompt_prior = torch.maximum(local[:, 1:2], local[:, 2:3]).clamp(0.05, 0.95)
+        prompt_logit = torch.logit(prompt_prior)
         local = (local - self.local_mean) / self.local_std
         global_tensor = (global_tensor - self.global_mean) / self.global_std
         x0, x1, x2, x3, x4 = self.features(self.local_encoder, local)
@@ -321,10 +328,12 @@ class NativeRefiner(nn.Module):
         x = self.dec3(torch.cat([self.up3(x), x2], dim=1))
         x = self.dec2(torch.cat([self.up2(x), x1], dim=1))
         x = self.dec1(torch.cat([self.up1(x), x0], dim=1))
-        return self.head(self.up0(x))
+        return self.head(self.up0(x)) + prompt_logit
 
 
 def masked_loss(logits, targets, valid):
+    logits = logits.float()
+    targets = targets.float()
     valid = valid.float()
     bce = (F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * valid).sum()
     bce = bce / valid.sum().clamp_min(1)
@@ -341,14 +350,17 @@ def train_model(samples, image_dir: Path, device):
     loader = DataLoader(
         dataset,
         batch_size=CONFIG["batch_size"],
-        shuffle=False,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(CONFIG["seed"]),
         num_workers=0,
         pin_memory=True,
         drop_last=True,
     )
     model = NativeRefiner(pretrained=True).to(device)
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    optimizer = torch.optim.AdamW(parameters, lr=3e-4, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(
+        parameters, lr=CONFIG["learning_rate"], weight_decay=CONFIG["weight_decay"]
+    )
     updates, total_updates = 0, CONFIG["optimizer_updates"]
     accumulation = CONFIG["accumulation"]
 
@@ -359,10 +371,13 @@ def train_model(samples, image_dir: Path, device):
         return 0.05 + 0.475 * (1 + math.cos(math.pi * min(ratio, 1)))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)
-    scaler = torch.amp.GradScaler("cuda", enabled=True)
+    amp_enabled = bool(CONFIG["amp"])
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
     optimizer.zero_grad(set_to_none=True)
     started = time.monotonic()
-    running_loss, micro_steps, epoch = 0.0, 0, 0
+    recent_losses = deque(maxlen=100)
+    all_losses = []
+    micro_steps, epoch = 0, 0
     while updates < total_updates:
         dataset.set_epoch(epoch)
         model.train()
@@ -371,27 +386,49 @@ def train_model(samples, image_dir: Path, device):
             global_tensor = global_tensor.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             valid = valid.to(device, non_blocking=True)
-            with torch.amp.autocast("cuda", enabled=True):
+            with torch.amp.autocast("cuda", enabled=amp_enabled):
                 loss = masked_loss(model(local, global_tensor), targets, valid)
+            if not torch.isfinite(loss):
+                raise FloatingPointError(
+                    f"Non-finite loss before backward at update {updates}, micro-step {micro_steps}"
+                )
             scaler.scale(loss / accumulation).backward()
-            running_loss += float(loss.detach())
+            loss_value = float(loss.detach())
+            recent_losses.append(loss_value)
+            all_losses.append(loss_value)
             micro_steps += 1
             if micro_steps % accumulation:
                 continue
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(parameters, 5.0)
+            gradient_norm = torch.nn.utils.clip_grad_norm_(
+                parameters, CONFIG["gradient_clip"], error_if_nonfinite=True
+            )
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
             updates += 1
+            if updates % 500 == 0:
+                nonfinite = [
+                    name
+                    for name, parameter in model.named_parameters()
+                    if not torch.isfinite(parameter).all()
+                ]
+                if nonfinite:
+                    raise FloatingPointError(
+                        f"Non-finite parameters after update {updates}: {nonfinite[:5]}"
+                    )
+                torch.save(model.state_dict(), WORK / "last-finite-native-refiner.pt")
             if updates % 100 == 0 or updates == total_updates:
                 elapsed = time.monotonic() - started
                 progress(
                     "native_training",
                     optimizer_update=updates,
                     optimizer_updates=total_updates,
-                    loss=running_loss / max(micro_steps, 1),
+                    rolling_loss=float(np.mean(recent_losses)),
+                    last_loss=loss_value,
+                    gradient_norm=float(gradient_norm),
+                    amp_scale=float(scaler.get_scale()),
                     seconds_per_update=elapsed / updates,
                     peak_allocated_gb=torch.cuda.max_memory_allocated() / 2**30,
                     peak_reserved_gb=torch.cuda.max_memory_reserved() / 2**30,
@@ -400,6 +437,11 @@ def train_model(samples, image_dir: Path, device):
                 break
         epoch += 1
     checkpoint = WORK / "native-refiner.pt"
+    nonfinite_parameters = [
+        name for name, parameter in model.named_parameters() if not torch.isfinite(parameter).all()
+    ]
+    if nonfinite_parameters:
+        raise FloatingPointError(f"Non-finite model parameters: {nonfinite_parameters[:5]}")
     torch.save(model.state_dict(), checkpoint)
     return (
         model.eval(),
@@ -408,6 +450,11 @@ def train_model(samples, image_dir: Path, device):
             "optimizer_updates": updates,
             "micro_steps": micro_steps,
             "epochs_started": epoch,
+            "amp": amp_enabled,
+            "nonfinite_batches": 0,
+            "last_loss": all_losses[-1],
+            "minimum_loss": min(all_losses),
+            "maximum_loss": max(all_losses),
             "seconds": time.monotonic() - started,
             "peak_allocated_gb": torch.cuda.max_memory_allocated() / 2**30,
             "peak_reserved_gb": torch.cuda.max_memory_reserved() / 2**30,
@@ -433,18 +480,23 @@ def native_refine(image, seed, coarse_mask, model, device):
     for start in range(0, len(prepared), CONFIG["inference_batch"]):
         local_batch = torch.stack(prepared[start : start + CONFIG["inference_batch"]]).to(device)
         global_batch = global_tensor.expand(len(local_batch), -1, -1, -1).to(device)
-        with torch.amp.autocast("cuda", enabled=True):
+        with torch.amp.autocast("cuda", enabled=bool(CONFIG["amp"])):
             output = model(local_batch, global_batch).sigmoid().float().cpu().numpy()[:, 0]
+        if not np.isfinite(output).all():
+            raise FloatingPointError("Non-finite probabilities during native inference")
         probabilities.extend(output)
     blended = core.blend_tiles(
         image_roi.shape,
         [(probability, x, y) for probability, (x, y) in zip(probabilities, positions, strict=True)],
     )
-    crop_mask = blended >= CONFIG["mask_threshold"]
-    result = np.zeros_like(seed, bool)
-    result[by0:by1, bx0:bx1] = crop_mask
-    confidence = float(blended[crop_mask].mean()) if crop_mask.any() else 0.0
-    return result, confidence, len(prepared)
+    return blended, bounds, len(prepared)
+
+
+def full_mask(probability, bounds, shape, threshold):
+    x0, y0, x1, y1 = bounds
+    result = np.zeros(shape, bool)
+    result[y0:y1, x0:x1] = probability >= threshold
+    return result
 
 
 def records_as_rle(filename, indices):
@@ -491,6 +543,28 @@ def evaluate(cache, names, indices, kind):
     return metric_core.metrics(np.sum(list(per_image.values()), axis=0)), per_image
 
 
+def comparison_strata(native_per_image, baseline_per_image, names):
+    groups = {}
+    for name in names:
+        year = int(name[:4])
+        period = "2011-2014" if year <= 2014 else "2015-2018" if year <= 2018 else "2019-2022"
+        groups.setdefault(f"site:{Path(name).stem[-2:]}", []).append(name)
+        groups.setdefault(f"period:{period}", []).append(name)
+    result = {}
+    for group, members in sorted(groups.items()):
+        baseline = metric_core.metrics(
+            np.sum([baseline_per_image[name] for name in members], axis=0)
+        )
+        native = metric_core.metrics(np.sum([native_per_image[name] for name in members], axis=0))
+        result[group] = {
+            "images": len(members),
+            "baseline": baseline,
+            "native": native,
+            "delta": native["pq"] - baseline["pq"],
+        }
+    return result
+
+
 def assess(model, paths, indices, device):
     validation_path = source_file(
         "validation-candidates.json", CONFIG["validation_candidates_sha256"]
@@ -502,19 +576,24 @@ def assess(model, paths, indices, device):
     baseline, baseline_per_image = evaluate(cache, names, indices, "refined")
     if abs(baseline["pq"] - CONFIG["expected_control_pq"]) > 1e-10:
         raise ValueError("Failed to reproduce the frozen control PQ")
+    thresholds = [float(value) for value in CONFIG["mask_threshold_grid"]]
     total_windows = 0
+    probability_summaries = []
     started = time.monotonic()
     for number, name in enumerate(names, 1):
         image = cv2.imread(str(paths["train"] / name), cv2.IMREAD_GRAYSCALE)
         for candidate in cache[name]:
             seed = decode(candidate["seed"])
             coarse_mask = decode(candidate["refined"])
-            native_mask, confidence, windows = native_refine(
-                image, seed, coarse_mask, model, device
+            probability, bounds, windows = native_refine(image, seed, coarse_mask, model, device)
+            probability_summaries.append(
+                np.quantile(probability, [0.0, 0.5, 0.9, 0.99, 1.0]).tolist()
             )
-            candidate["native"] = encode(native_mask)
-            candidate["native_area"] = int(native_mask.sum())
-            candidate["native_confidence"] = confidence
+            for threshold in thresholds:
+                key = f"native_{threshold:.2f}".replace(".", "_")
+                native_mask = full_mask(probability, bounds, seed.shape, threshold)
+                candidate[key] = encode(native_mask)
+                candidate[f"{key}_area"] = int(native_mask.sum())
             total_windows += windows
         if number % 10 == 0:
             progress(
@@ -523,14 +602,40 @@ def assess(model, paths, indices, device):
                 images_total=len(names),
                 windows=total_windows,
             )
-    native, native_per_image = evaluate(cache, names, indices, "native")
     calibration = set(CONFIG["calibration_names"])
     other = [name for name in names if name not in calibration]
+    calibration_grid = []
+    for threshold in thresholds:
+        key = f"native_{threshold:.2f}".replace(".", "_")
+        metrics, _ = evaluate(cache, sorted(calibration), indices, key)
+        calibration_grid.append({"threshold": threshold, **metrics})
+    selected_threshold = core.choose_threshold(
+        [(row["threshold"], row["pq"]) for row in calibration_grid],
+        CONFIG["mask_threshold_default"],
+    )
+    selected_key = f"native_{selected_threshold:.2f}".replace(".", "_")
+    for candidates in cache.values():
+        for candidate in candidates:
+            candidate["native"] = candidate[selected_key]
+            candidate["native_area"] = candidate[f"{selected_key}_area"]
+            for threshold in thresholds:
+                key = f"native_{threshold:.2f}".replace(".", "_")
+                candidate.pop(key)
+                candidate.pop(f"{key}_area")
+    native, native_per_image = evaluate(cache, names, indices, "native")
     baseline_other = metric_core.metrics(
         np.sum([baseline_per_image[name] for name in other], axis=0)
     )
     native_other = metric_core.metrics(np.sum([native_per_image[name] for name in other], axis=0))
     bootstrap = metric_core.bootstrap_delta(native_per_image, baseline_per_image, other, 2000)
+    nonempty_candidates = sum(
+        int(candidate["native_area"] > 0)
+        for candidates in cache.values()
+        for candidate in candidates
+    )
+    total_candidates = sum(len(candidates) for candidates in cache.values())
+    if nonempty_candidates == 0:
+        raise RuntimeError("Native reconstruction collapsed to all-empty masks")
     gate = (
         native["pq"] - baseline["pq"] >= 0.015
         and native_other["pq"] - baseline_other["pq"] >= 0.01
@@ -549,6 +654,14 @@ def assess(model, paths, indices, device):
         "paired_block_bootstrap82": bootstrap,
         "diagnostic_gate": gate,
         "evidence_scope": "historical-validation geometry diagnostic",
+        "selected_mask_threshold": selected_threshold,
+        "calibration_grid": calibration_grid,
+        "nonempty_candidates": nonempty_candidates,
+        "total_candidates": total_candidates,
+        "probability_quantiles": np.quantile(
+            np.asarray(probability_summaries), [0.0, 0.5, 1.0], axis=0
+        ).tolist(),
+        "strata": comparison_strata(native_per_image, baseline_per_image, other),
         "inference_seconds": time.monotonic() - started,
         "windows": total_windows,
         "candidate_cache_sha256": digest(cache_path),

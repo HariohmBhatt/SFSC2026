@@ -2,13 +2,65 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Sequence
+from datetime import datetime
 
 import numpy as np
 
 WINDOW = 512
 STRIDE = 384
+
+
+def make_pilot_split(
+    filenames: Sequence[str], block_days: int = 60, purge_days: int = 7
+) -> dict[str, list[str]]:
+    """Freeze the first R/Q-fit/Q-calibration/H split using shared date blocks."""
+    names = sorted(set(filenames))
+    if len(names) != len(filenames):
+        raise ValueError("Pilot filenames must be unique")
+    days = {name: datetime.strptime(name[:14], "%Y%m%d%H%M%S").date().toordinal() for name in names}
+    roles = {}
+    for name in names:
+        block = days[name] // block_days
+        bucket = int(hashlib.sha256(f"native-v4:9:{block}".encode()).hexdigest()[:8], 16) % 5
+        roles[name] = "R" if bucket < 3 else "Q" if bucket == 3 else "H"
+    held = [name for name in names if roles[name] == "H"]
+    quality = [
+        name
+        for name in names
+        if roles[name] == "Q" and all(abs(days[name] - days[other]) > purge_days for other in held)
+    ]
+    fitting = [
+        name
+        for name in names
+        if roles[name] == "R"
+        and all(
+            abs(days[name] - days[other]) > purge_days
+            for other in names
+            if roles[other] in {"Q", "H"}
+        )
+    ]
+    quality_calibration = [
+        name
+        for name in quality
+        if int(
+            hashlib.sha256(f"native-v4:q:8:{days[name] // block_days}".encode()).hexdigest()[:8],
+            16,
+        )
+        % 3
+        == 0
+    ]
+    quality_fit = sorted(set(quality) - set(quality_calibration))
+    selected = set(fitting) | set(quality_fit) | set(quality_calibration) | set(held)
+    return {
+        "fitting": sorted(fitting),
+        "quality_fit": quality_fit,
+        "quality_calibration": sorted(quality_calibration),
+        "assessment": sorted(held),
+        "purged": sorted(set(names) - selected),
+    }
 
 
 def axis_starts(length: int, window: int = WINDOW, stride: int = STRIDE) -> list[int]:
@@ -71,6 +123,16 @@ def conditioning_bounds(
     if seed.shape != coarse_mask.shape:
         raise ValueError("Seed and coarse mask must share image coordinates")
     return expanded_square(seed.astype(bool) | coarse_mask.astype(bool), context, minimum)
+
+
+def choose_threshold(measurements: Sequence[tuple[float, float]], default: float = 0.5) -> float:
+    """Choose the best calibration PQ, resolving ties toward the declared default."""
+    if not measurements:
+        raise ValueError("At least one threshold measurement is required")
+    for threshold, pq in measurements:
+        if not math.isfinite(threshold) or not math.isfinite(pq) or not 0 < threshold < 1:
+            raise ValueError("Threshold measurements must be finite and within (0, 1)")
+    return max(measurements, key=lambda item: (item[1], -abs(item[0] - default), item[0]))[0]
 
 
 def taper(window: int = WINDOW, floor: float = 0.05) -> np.ndarray:

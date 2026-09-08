@@ -131,8 +131,13 @@ def prepare() -> dict:
         "accumulation": 4,
         "optimizer_updates": 4000,
         "warmup_updates": 200,
+        "learning_rate": 0.0001,
+        "weight_decay": 0.0001,
+        "gradient_clip": 2.0,
+        "amp": False,
         "inference_batch": 2,
-        "mask_threshold": 0.55,
+        "mask_threshold_grid": [0.20, 0.30, 0.40, 0.50, 0.55, 0.60, 0.70],
+        "mask_threshold_default": 0.50,
         "score_threshold": 0.30,
         "minimum_area": 64,
     }
@@ -237,6 +242,12 @@ def fetch_and_verify(record: dict) -> dict:
         files = list(destination.rglob(filename))
         if len(files) != 1 or digest(files[0]) != expected_hash:
             raise ValueError(f"Artifact verification failed for {filename}")
+    training = report["training"]
+    assessment = report["assessment"]
+    if training.get("nonfinite_batches") != 0:
+        raise ValueError("Remote training reported non-finite batches")
+    if assessment.get("nonempty_candidates", 0) == 0:
+        raise ValueError("Remote reconstruction produced no non-empty masks")
     return report
 
 

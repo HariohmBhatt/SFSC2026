@@ -106,6 +106,10 @@ Also pool the frozen global encoder's last feature map, project it to 64 channel
 and broadcast that vector into the local decoder bottleneck. This explicit
 whole-ROI feature path carries context beyond the cropped probability map. Train
 the projection with the local decoder; cache only detached global features.
+Predict a residual over a softened prompt prior and initialize the residual head
+at zero. This preserves the starting instance identity while still allowing the
+model to add and remove pixels. Retain seed, global and native alternatives for
+the later quality stage; the residual prior is not a deployment fallback rule.
 
 Windows are **512 original-image pixels**, stride 384; no downsampling to fit a
 large ROI into one window. Cover the full ROI, including global-confident
@@ -118,7 +122,9 @@ Blend overlapping probability predictions with a positive, tapered spatial
 weight, divide by accumulated weights, then threshold the reconstructed mask.
 Do not threshold each tile separately or use connected components as separate
 instances. All tiles from a proposal remain one proposal, even if its annotation
-contains disconnected pieces. Start with the inherited 0.55 mask threshold.
+contains disconnected pieces. Calibrate a compact predeclared threshold grid for
+every new output head. The inherited 0.55 threshold is a control value, not
+transferable calibration for a residual native decoder.
 
 An optional, separately measured expansion rule can rerun a proposal once with
 ROI context 2.4 if global foreground reaches the original ROI boundary. Apply
@@ -229,8 +235,10 @@ quota and no forced instance fallback.
 
 Before any new fit, partition the original 495 training JPEGs into fitting R,
 quality Q and assessment H using shared 60-day date blocks across all sites.
-Target approximately 60/20/20%; freeze actual counts, dates and hashes. Q has
-separate block-disjoint quality-fit and threshold-calibration portions. Purge
+The frozen filename-only assignment in `core.make_pilot_split` produces 289 R,
+69 Q-fit, 34 Q-calibration, 87 H and 16 purged JPEGs. Record the membership hash
+with every stage. Q has separate block-disjoint quality-fit and
+threshold-calibration portions. Purge
 fitting observations within seven days of H, and R within seven days of Q.
 Purge quality-fit observations near its calibration blocks as well. If these
 counts are too small, redesign membership before training or reading outcomes.
@@ -290,7 +298,8 @@ control and report uncertainty rather than buying submissions to resolve it.
 
 | Order | Change under test | Proceed only if |
 |---|---|---|
-| A | Finish v3; reproduce control and audit error stages | Inputs, metric and model lineage agree |
+| 0 | Numerical/integrity diagnostic on historical validation | Finite weights and non-collapsed masks; no promotion claim |
+| A | Freeze the 0.38 control and audit error stages | Inputs, metric and model lineage agree |
 | B | Realistic prompts, same 384 architecture | Complete-mask PQ improves under matched membership |
 | C | Add native local reconstruction, fixed proposals | Gains survive complete-mask assembly and runtime measurement |
 | D | Add four crop views | Incremental PQ justifies additional FP and latency |
@@ -328,6 +337,12 @@ Replace these ranges after profiling using
 Split work into jobs below the current nine-hour pipeline ceiling; verify actual
 Kaggle quota and session limits at launch. Stop ineffective branches early at
 their predeclared comparison, not by peeking at H every epoch.
+
+Every training stage must reject a non-finite loss or gradient before the
+optimizer advances, verify parameters at checkpoints, retain the last finite
+checkpoint, and reject non-finite or all-empty inference. A remote kernel marked
+`COMPLETE` is infrastructure status only; artifact integrity decides whether the
+experiment completed successfully.
 
 ## 8. Final fitting and submission policy
 

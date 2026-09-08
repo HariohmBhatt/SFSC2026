@@ -1,6 +1,11 @@
 """Behavioral tests for native ROI geometry, association, and stitching."""
 
+import ast
+import base64
 import importlib.util
+import json
+import zlib
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +15,10 @@ MODULE = ROOT / "filament-native-reconstruction/core.py"
 spec = importlib.util.spec_from_file_location("native_core", MODULE)
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
+AUDIT_MODULE = ROOT / "filament-native-reconstruction/audit.py"
+audit_spec = importlib.util.spec_from_file_location("native_audit", AUDIT_MODULE)
+audit = importlib.util.module_from_spec(audit_spec)
+audit_spec.loader.exec_module(audit)
 
 
 def test_windows_cover_roi_once_at_edges_and_with_overlap_inside():
@@ -52,6 +61,35 @@ def test_conditioning_roi_covers_seed_and_coarse_global_extent():
     assert x1 >= 550 and y1 >= 650
 
 
+def test_threshold_selection_uses_calibration_pq_and_deterministic_tie_break():
+    assert native.choose_threshold([(0.3, 0.4), (0.5, 0.42), (0.7, 0.41)]) == 0.5
+    assert native.choose_threshold([(0.4, 0.42), (0.6, 0.42)], default=0.5) == 0.6
+
+
+def test_first_blocked_pilot_split_is_frozen_and_purged():
+    tree = ast.parse((ROOT / "kaggle/yolo-refiner/train_validation.py").read_text())
+    encoded = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "SPLIT_B64" for target in node.targets
+        )
+    )
+    names = json.loads(zlib.decompress(base64.b64decode(encoded)))["train"]
+    split = native.make_pilot_split(names)
+    assert {key: len(value) for key, value in split.items()} == {
+        "fitting": 289,
+        "quality_fit": 69,
+        "quality_calibration": 34,
+        "assessment": 87,
+        "purged": 16,
+    }
+    days = {name: datetime.strptime(name[:14], "%Y%m%d%H%M%S").date().toordinal() for name in names}
+    held_back = split["quality_fit"] + split["quality_calibration"] + split["assessment"]
+    assert min(abs(days[a] - days[b]) for a in split["fitting"] for b in held_back) > 7
+
+
 def test_prompt_association_keeps_partial_object_and_rejects_merges():
     first = np.zeros((64, 64), bool)
     first[8:40, 8:24] = True
@@ -88,3 +126,32 @@ def test_padded_crop_marks_only_real_roi_pixels_valid():
     assert np.array_equal(crop[:3, :4], image)
     assert not valid[3:, :].any()
     assert not valid[:, 4:].any()
+
+
+def test_artifact_audit_rejects_complete_run_with_all_empty_masks():
+    report = {
+        "status": "complete",
+        "training": {"nonfinite_batches": 1},
+        "assessment": {"native": {"pq": 0.0}, "native82": {"pq": 0.0}},
+    }
+    candidates = {"image.jpeg": [{"native_area": 0}, {"native_area": 0}]}
+    assert audit.audit_payload(report, candidates) == [
+        "training recorded 1 non-finite batches",
+        "all reconstructed candidate masks are empty",
+        "run was marked complete despite integrity failures",
+    ]
+
+
+def test_artifact_audit_accepts_finite_noncollapsed_run():
+    report = {
+        "status": "complete",
+        "training": {
+            "nonfinite_batches": 0,
+            "last_loss": 0.2,
+            "minimum_loss": 0.2,
+            "maximum_loss": 0.8,
+        },
+        "assessment": {"native": {"pq": 0.4}, "native82": {"pq": 0.4}},
+    }
+    candidates = {"image.jpeg": [{"native_area": 100}, {"native_area": 0}]}
+    assert audit.audit_payload(report, candidates) == []

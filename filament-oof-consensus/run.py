@@ -268,6 +268,13 @@ def fetch(record, stage):
         )
     ):
         raise ValueError("Final override provenance mismatch")
+    if stage["name"] == "assess":
+        quality_files = list(home.rglob("quality.json"))
+        if (
+            len(quality_files) != 1
+            or core.digest_bytes(quality_files[0].read_bytes()) != report["quality_sha256"]
+        ):
+            raise ValueError("Assessment quality-model hash mismatch")
     if stage["name"].startswith("fold-"):
         fold = record["folds"][int(stage["name"].split("-")[-1])]
         if report["train_names"] != fold["train"] or report["held_names"] != fold["held"]:
@@ -275,12 +282,17 @@ def fetch(record, stage):
     return report, home
 
 
-def verify_final(report, home, expected):
+def verify_final(report, home, expected, expected_quality_sha256=None):
     files = list(home.rglob("submission.csv"))
     if len(files) != 1 or core.digest_bytes(files[0].read_bytes()) != report["submission_sha256"]:
         raise ValueError("Submission hash mismatch")
     if set(report["counts"]) != set(expected):
         raise ValueError("Missing inference image manifest")
+    if (
+        expected_quality_sha256 is not None
+        and report.get("quality_sha256") != expected_quality_sha256
+    ):
+        raise ValueError("Final quality-model lineage mismatch")
     counts = dict.fromkeys(expected, 0)
     occupied, seen = {}, set()
     with files[0].open() as stream:
@@ -393,7 +405,13 @@ def monitor(record, manual_gate_override=False):
             expected = sorted(
                 p.name for p in (ROOT / "SFSCDataset/test/test_images").glob("*.jpeg")
             )
-            record["submission_file"] = verify_final(report, home, expected)
+            assessment = next(s for s in record["stages"] if s["name"] == "assess")
+            record["submission_file"] = verify_final(
+                report,
+                home,
+                expected,
+                assessment["report"]["quality_sha256"],
+            )
     record["status"] = "inference_ready"
     record["completed_at"] = datetime.now(UTC).isoformat()
     write_json(RECORD, record)
@@ -442,6 +460,8 @@ def main():
             assessment = next(s for s in record["stages"] if s["name"] == "assess")
             if assessment["status"] != "complete":
                 raise RuntimeError("The assessment must complete before overriding its gate")
+            if assessment["report"]["full_refit_gate"]:
+                raise RuntimeError("The assessment passed; a gate override is unnecessary")
             if "manual_gate_override" not in record:
                 record["manual_gate_override"] = {
                     "authorized_at": datetime.now(UTC).isoformat(),

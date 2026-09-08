@@ -255,7 +255,7 @@ def test_controller_can_continue_after_failed_gate_when_explicitly_overridden(
             {
                 "name": "assess",
                 "status": "complete",
-                "report": {"full_refit_gate": False},
+                "report": {"full_refit_gate": False, "quality_sha256": "quality"},
             },
             {"name": "final", "status": "prepared", "kernel": "owner/requested"},
         ],
@@ -263,6 +263,42 @@ def test_controller_can_continue_after_failed_gate_when_explicitly_overridden(
     runner.monitor(record)
     assert record["status"] == "inference_ready"
     assert record["stages"][1]["status"] == "complete"
+
+
+def test_controller_restores_override_provenance_after_interrupted_push(tmp_path, monkeypatch):
+    runner = load_runner()
+    runner.ROOT = tmp_path
+    runner.RECORD = tmp_path / "record.json"
+    config = {
+        "run_id": "run-1",
+        "source_sha256": "frozen-source",
+        "execution_source_sha256": "override-source",
+        "stage": "final",
+        "manual_gate_override": True,
+    }
+    runner.write_json(tmp_path / "run/final/task-config.json", config)
+    monkeypatch.setattr(runner, "cli", lambda *_: "KernelWorkerStatus.COMPLETE")
+    monkeypatch.setattr(runner, "fetch", lambda *_: ({"status": "complete"}, tmp_path))
+    monkeypatch.setattr(runner, "verify_final", lambda *_: "submission.csv")
+    final = {"name": "final", "status": "pushing", "kernel": "owner/final"}
+    record = {
+        "run_id": "run-1",
+        "source_sha256": "frozen-source",
+        "directory": "run",
+        "manual_gate_override": {"authorized_at": "already-authorized"},
+        "stages": [
+            {
+                "name": "assess",
+                "status": "complete",
+                "report": {"full_refit_gate": False, "quality_sha256": "quality"},
+            },
+            final,
+        ],
+    }
+    runner.monitor(record)
+    assert final["execution_source_sha256"] == "override-source"
+    assert final["manual_gate_override"] is True
+    assert record["status"] == "inference_ready"
 
 
 def test_submission_verifier_allows_zero_predictions_only_with_complete_count_manifest(tmp_path):
@@ -286,8 +322,14 @@ def test_submission_verifier_allows_zero_predictions_only_with_complete_count_ma
         "counts": {"positive.jpeg": 1, "negative.jpeg": 0},
         "detector_sha256": core.digest_bytes(detector.read_bytes()),
         "refiner_sha256": core.digest_bytes(refiner.read_bytes()),
+        "quality_sha256": "quality-hash",
     }
-    assert runner.verify_final(report, tmp_path, list(report["counts"])) == "submission.csv"
+    assert (
+        runner.verify_final(report, tmp_path, list(report["counts"]), "quality-hash")
+        == "submission.csv"
+    )
+    with pytest.raises(ValueError, match="quality-model"):
+        runner.verify_final(report, tmp_path, list(report["counts"]), "wrong-quality-hash")
     with pytest.raises(ValueError, match="manifest"):
         runner.verify_final(report, tmp_path, ["positive.jpeg"])
     report["submission_sha256"] = "incorrect"

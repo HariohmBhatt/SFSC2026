@@ -110,7 +110,7 @@ def build_samples(candidates, indices) -> tuple[list[dict], dict]:
                 "filename": filename,
                 "proposal_id": proposal_id,
                 "seed": seed_row["rle"],
-                "global": global_row["rle"],
+                "coarse_mask": global_row["rle"],
                 "detector_score": float(seed_row["detector_score"]),
             }
             if association["status"] == "positive":
@@ -150,15 +150,15 @@ def resized_global_inputs(image, seed, bounds, size=384) -> np.ndarray:
     return np.stack([image_crop, clahe, seed_crop * 255]).astype(np.float32) / 255.0
 
 
-def local_input(image_roi, seed_roi, global_roi, x0, y0, window=512):
+def local_input(image_roi, seed_roi, coarse_roi, x0, y0, window=512):
     height, width = image_roi.shape
     actual_height, actual_width = min(window, height - y0), min(window, width - x0)
     image_tile = image_roi[y0 : y0 + actual_height, x0 : x0 + actual_width]
     seed_tile = seed_roi[y0 : y0 + actual_height, x0 : x0 + actual_width]
-    global_tile = global_roi[y0 : y0 + actual_height, x0 : x0 + actual_width]
+    coarse_tile = coarse_roi[y0 : y0 + actual_height, x0 : x0 + actual_width]
     image_tile, valid = core.pad_to_window(image_tile, window, "reflect")
     seed_tile, _ = core.pad_to_window(seed_tile.astype(np.float32), window)
-    global_tile, _ = core.pad_to_window(global_tile.astype(np.float32), window)
+    coarse_tile, _ = core.pad_to_window(coarse_tile.astype(np.float32), window)
     xs = np.broadcast_to(
         np.linspace(-1, 1, max(width, 2), dtype=np.float32)[None, :], (height, width)
     )[y0 : y0 + actual_height, x0 : x0 + actual_width]
@@ -168,7 +168,7 @@ def local_input(image_roi, seed_roi, global_roi, x0, y0, window=512):
     xs, _ = core.pad_to_window(xs, window)
     ys, _ = core.pad_to_window(ys, window)
     features = np.stack(
-        [image_tile / 255.0, seed_tile, global_tile, xs, ys, valid.astype(np.float32)]
+        [image_tile / 255.0, seed_tile, coarse_tile, xs, ys, valid.astype(np.float32)]
     ).astype(np.float32)
     return features, valid, actual_width, actual_height
 
@@ -203,13 +203,13 @@ class NativeDataset(Dataset):
         sample = self.samples[index]
         image = self.image(sample["filename"])
         seed = cached_decode(sample["seed"]["counts"])
-        global_mask = cached_decode(sample["global"]["counts"])
+        coarse_mask = cached_decode(sample["coarse_mask"]["counts"])
         target = cached_decode(sample["target"]["counts"])
-        bounds = core.expanded_square(seed)
+        bounds = core.conditioning_bounds(seed, coarse_mask)
         bx0, by0, bx1, by1 = bounds
         image_roi = image[by0:by1, bx0:bx1]
         seed_roi = seed[by0:by1, bx0:bx1]
-        global_roi = global_mask[by0:by1, bx0:bx1]
+        coarse_roi = coarse_mask[by0:by1, bx0:bx1]
         target_roi = target[by0:by1, bx0:bx1]
         starts = [
             (x, y)
@@ -221,7 +221,7 @@ class NativeDataset(Dataset):
         choices = foreground if foreground and rng.random() < 0.7 else starts
         x0, y0 = choices[int(rng.integers(0, len(choices)))]
         local, valid, actual_width, actual_height = local_input(
-            image_roi, seed_roi, global_roi, x0, y0
+            image_roi, seed_roi, coarse_roi, x0, y0
         )
         target_tile = target_roi[y0 : y0 + actual_height, x0 : x0 + actual_width]
         target_tile, _ = core.pad_to_window(target_tile.astype(np.float32), 512)
@@ -416,17 +416,17 @@ def train_model(samples, image_dir: Path, device):
 
 
 @torch.inference_mode()
-def native_refine(image, seed, global_mask, model, device):
-    bounds = core.expanded_square(seed)
+def native_refine(image, seed, coarse_mask, model, device):
+    bounds = core.conditioning_bounds(seed, coarse_mask)
     bx0, by0, bx1, by1 = bounds
     image_roi = image[by0:by1, bx0:bx1]
     seed_roi = seed[by0:by1, bx0:bx1]
-    global_roi = global_mask[by0:by1, bx0:bx1]
+    coarse_roi = coarse_mask[by0:by1, bx0:bx1]
     global_tensor = torch.from_numpy(resized_global_inputs(image, seed, bounds))
     prepared, positions = [], []
     for y0 in core.axis_starts(image_roi.shape[0]):
         for x0 in core.axis_starts(image_roi.shape[1]):
-            local, _, _, _ = local_input(image_roi, seed_roi, global_roi, x0, y0)
+            local, _, _, _ = local_input(image_roi, seed_roi, coarse_roi, x0, y0)
             prepared.append(torch.from_numpy(local))
             positions.append((x0, y0))
     probabilities = []
@@ -508,9 +508,9 @@ def assess(model, paths, indices, device):
         image = cv2.imread(str(paths["train"] / name), cv2.IMREAD_GRAYSCALE)
         for candidate in cache[name]:
             seed = decode(candidate["seed"])
-            global_mask = decode(candidate["refined"])
+            coarse_mask = decode(candidate["refined"])
             native_mask, confidence, windows = native_refine(
-                image, seed, global_mask, model, device
+                image, seed, coarse_mask, model, device
             )
             candidate["native"] = encode(native_mask)
             candidate["native_area"] = int(native_mask.sum())
@@ -547,7 +547,8 @@ def assess(model, paths, indices, device):
         "native82": native_other,
         "delta82": native_other["pq"] - baseline_other["pq"],
         "paired_block_bootstrap82": bootstrap,
-        "promotion_gate": gate,
+        "diagnostic_gate": gate,
+        "evidence_scope": "historical-validation geometry diagnostic",
         "inference_seconds": time.monotonic() - started,
         "windows": total_windows,
         "candidate_cache_sha256": digest(cache_path),

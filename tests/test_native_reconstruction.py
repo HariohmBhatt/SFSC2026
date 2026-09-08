@@ -42,6 +42,16 @@ def test_expanded_roi_preserves_context_at_image_boundary():
     assert native.expanded_square(mask, context=1.6, minimum=128) == (0, 0, 160, 160)
 
 
+def test_conditioning_roi_covers_seed_and_coarse_global_extent():
+    seed = np.zeros((1000, 1000), bool)
+    seed[400:450, 400:450] = True
+    coarse = np.zeros_like(seed)
+    coarse[300:650, 350:550] = True
+    x0, y0, x1, y1 = native.conditioning_bounds(seed, coarse)
+    assert x0 <= 350 and y0 <= 300
+    assert x1 >= 550 and y1 >= 650
+
+
 def test_prompt_association_keeps_partial_object_and_rejects_merges():
     first = np.zeros((64, 64), bool)
     first[8:40, 8:24] = True

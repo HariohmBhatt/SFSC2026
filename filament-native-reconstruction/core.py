@@ -61,6 +61,18 @@ def expanded_square(
     return x0, y0, x0 + side, y0 + side
 
 
+def conditioning_bounds(
+    seed: np.ndarray,
+    coarse_mask: np.ndarray,
+    context: float = 1.6,
+    minimum: int = 128,
+) -> tuple[int, int, int, int]:
+    """Cover all observable prompt extent before adding reconstruction context."""
+    if seed.shape != coarse_mask.shape:
+        raise ValueError("Seed and coarse mask must share image coordinates")
+    return expanded_square(seed.astype(bool) | coarse_mask.astype(bool), context, minimum)
+
+
 def taper(window: int = WINDOW, floor: float = 0.05) -> np.ndarray:
     """Positive separable cosine weights for overlap blending."""
     if window <= 0 or not 0 < floor <= 1:

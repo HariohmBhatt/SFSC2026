@@ -1,9 +1,11 @@
 # Filament Native Reconstruction v4
 
-September 7, 2026. The first controlled native-refinement pilot was launched on
+September 7, 2026. An exploratory native-refinement diagnostic was launched on
 September 8. It reuses the three excluded-prediction caches from Consensus v3
-for honest training prompts and retains the frozen 106-image assessment. The
-larger sliced-detector and full-fit stages remain conditional on this pilot.
+for honest training prompts and reports against the historical 106-image
+validation. It is cheaper than the blocked pilot specified below and cannot
+promote the approach. The matched realistic-prompt experiment, R/Q/H pilot,
+sliced detector, and full fit remain unimplemented.
 
 ## Decision
 
@@ -362,9 +364,11 @@ Primary-source comparison and limitations:
 Earlier failure-mode review:
 [competitive review](../filament-oof-consensus/REVIEW.md).
 
-This directory currently contains the design only. Required implementation
-modules are split/lineage preparation, excluded upstream candidate generation,
-proposal matching, native geometry/dataset, local model training, mask assembly,
-quality fitting, assessment and orchestration. Geometry round trips, label
-exclusion, duplicate handling and official evaluator parity need substantive
-tests before a GPU campaign is launched from this specification.
+This directory implements the reusable native geometry, proposal matching, local
+model, historical assessment, and Kaggle orchestration used by the exploratory
+diagnostic. The diagnostic uses binary cached coarse masks and 4,000 optimizer
+updates to fit within one P100 session; those are recorded simplifications, not
+the 10,000-update blocked pilot. Split/lineage preparation for R/Q/H, matched
+realistic-prompt controls, global probability generation, quality fitting,
+subgroup reporting, and the second blocked assessment remain required before a
+GPU campaign can claim to implement this full specification.

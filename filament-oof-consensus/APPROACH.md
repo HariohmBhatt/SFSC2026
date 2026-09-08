@@ -151,11 +151,15 @@ SQ, RQ and size-specific aspirations are diagnostic rather than arbitrary
 additional vetoes. A metric disagreement stops promotion for investigation;
 non-overlapping predictions do not guarantee parity with overlapping truths.
 A failed gate stops the controller with a complete report and spends no further
-full-training compute. There is no automatic fallback submission.
+full-training compute. An explicit, user-authorized `run --override-gate` may
+continue final fitting while preserving the failed assessment and override
+provenance; ordinary resumes then honor that durable authorization. There is no
+automatic fallback submission.
 
 ## Full training and inference
 
-If the gate passes, the next kernel fits the same detector and refiner recipe on
+If the gate passes, or the failed gate is explicitly overridden as described
+above, the next kernel fits the same detector and refiner recipe on
 all 601 train-plus-validation JPEGs, retaining the fixed 36/9 durations and
 original schedules. The quality coefficients remain frozen from clean OOF
 training. No quality targets are fitted from in-sample full-model predictions.
@@ -179,11 +183,14 @@ Local preparation and orchestration:
 ```bash
 uv run python filament-oof-consensus/run.py prepare
 uv run python filament-oof-consensus/run.py run
+uv run python filament-oof-consensus/run.py run --override-gate
 uv run python filament-oof-consensus/run.py status
 ```
 
 The controller runs in the background, serially pushes private P100 kernels,
 waits for completion, downloads reports, and advances only on verified lineage.
+The final download includes both trained checkpoints and independently verifies
+their hashes against the final report.
 It records push intent before upload and reuses kernel IDs on resume. A local
 lock prevents two controllers from running simultaneously. An ambiguous or
 failed stage stops with an error instead of blindly restarting training.

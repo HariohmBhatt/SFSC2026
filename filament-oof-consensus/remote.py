@@ -464,13 +464,21 @@ def main():
         elif stage == "final":
             validation = json.loads(source_file("consensus/assessment-report.json").read_text())
             if (
-                not validation["full_refit_gate"]
+                (
+                    not validation["full_refit_gate"]
+                    and not CONFIG.get("manual_gate_override", False)
+                )
                 or validation["run_id"] != CONFIG["run_id"]
                 or validation["source_sha256"] != CONFIG["source_sha256"]
             ):
                 raise ValueError("Final training gate/lineage failed")
             models = train_fixed(CONFIG["train_names"], paths, indices, cfg)
             result = final_inference(paths, models, cfg, validation)
+            result.update(
+                manual_gate_override=bool(CONFIG.get("manual_gate_override", False)),
+                assessment_full_refit_gate=validation["full_refit_gate"],
+                execution_source_sha256=CONFIG["execution_source_sha256"],
+            )
             write_json(WORK / "final-report.json", result)
         else:
             raise ValueError(f"Unknown stage {stage}")

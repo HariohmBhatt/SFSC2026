@@ -249,6 +249,7 @@ def test_controller_can_continue_after_failed_gate_when_explicitly_overridden(
     monkeypatch.setattr(runner, "fetch", lambda *_: (final_report, tmp_path))
     monkeypatch.setattr(runner, "verify_final", lambda *_: "submission.csv")
     record = {
+        "manual_gate_override": {"authorized_at": "already-authorized"},
         "split": {"test": []},
         "stages": [
             {
@@ -259,7 +260,7 @@ def test_controller_can_continue_after_failed_gate_when_explicitly_overridden(
             {"name": "final", "status": "prepared", "kernel": "owner/requested"},
         ],
     }
-    runner.monitor(record, manual_gate_override=True)
+    runner.monitor(record)
     assert record["status"] == "inference_ready"
     assert record["stages"][1]["status"] == "complete"
 
@@ -276,9 +277,15 @@ def test_submission_verifier_allows_zero_predictions_only_with_complete_count_ma
         writer = csv.writer(f)
         writer.writerow(["filament_id", "segmentation_rle"])
         writer.writerow(["positive_1", core.encode(mask)["counts"]])
+    detector = tmp_path / "detector.pt"
+    refiner = tmp_path / "refiner.pt"
+    detector.write_bytes(b"detector")
+    refiner.write_bytes(b"refiner")
     report = {
         "submission_sha256": core.digest_bytes(path.read_bytes()),
         "counts": {"positive.jpeg": 1, "negative.jpeg": 0},
+        "detector_sha256": core.digest_bytes(detector.read_bytes()),
+        "refiner_sha256": core.digest_bytes(refiner.read_bytes()),
     }
     assert runner.verify_final(report, tmp_path, list(report["counts"])) == "submission.csv"
     with pytest.raises(ValueError, match="manifest"):

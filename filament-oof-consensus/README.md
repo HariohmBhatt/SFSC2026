@@ -42,3 +42,15 @@ recorded replacement stage, not silent artifact reuse.
 The successful terminal state is `inference_ready`. The failed-validation state
 is `gate_failed`; all validation results are preserved, and final training does
 not start. No leaderboard upload occurs automatically.
+
+After reviewing a failed assessment, an explicitly authorized final fit can be
+started with:
+
+```bash
+uv run python filament-oof-consensus/run.py run --override-gate
+```
+
+The failed assessment remains in the record and ordinary resumes honor the
+durable override. The final output records its execution-source identity, and
+the controller downloads and verifies both trained checkpoints. This produces a
+validated inference artifact; it still does not upload a leaderboard submission.

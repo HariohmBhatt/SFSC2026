@@ -123,9 +123,10 @@ def execution_source(source, stage_name, manual_gate_override=False):
         'CONFIG.get("manual_gate_override", False))\n'
         '                or validation["run_id"]'
     )
-    if payload["remote.py"].count(original) != 1:
-        raise ValueError("Could not apply the frozen final-gate override")
-    payload["remote.py"] = payload["remote.py"].replace(original, replacement)
+    if 'CONFIG.get("manual_gate_override", False)' not in payload["remote.py"]:
+        if payload["remote.py"].count(original) != 1:
+            raise ValueError("Could not apply the frozen final-gate override")
+        payload["remote.py"] = payload["remote.py"].replace(original, replacement)
     result_line = "            result = final_inference(paths, models, cfg, validation)\n"
     result_provenance = result_line + (
         "            result.update(\n"
@@ -134,9 +135,10 @@ def execution_source(source, stage_name, manual_gate_override=False):
         "                execution_source_sha256=CONFIG[\"execution_source_sha256\"],\n"
         "            )\n"
     )
-    if payload["remote.py"].count(result_line) != 1:
-        raise ValueError("Could not add final-gate override provenance")
-    payload["remote.py"] = payload["remote.py"].replace(result_line, result_provenance)
+    if "assessment_full_refit_gate" not in payload["remote.py"]:
+        if payload["remote.py"].count(result_line) != 1:
+            raise ValueError("Could not add final-gate override provenance")
+        payload["remote.py"] = payload["remote.py"].replace(result_line, result_provenance)
     return payload
 
 
@@ -213,12 +215,20 @@ runpy.run_path(str(root / 'remote.py'), run_name='__main__')
     write_json(stage_dir / "kernel-metadata.json", metadata)
     write_json(stage_dir / "task-config.json", config)
     stage["code_sha256"] = core.digest_bytes(bootstrap.encode())
+    stage["execution_source_sha256"] = config["execution_source_sha256"]
+    stage["manual_gate_override"] = manual_gate_override
     return stage_dir
 
 
 def fetch(record, stage):
     home = ROOT / record["directory"] / stage["name"] / "results"
     home.mkdir(parents=True, exist_ok=True)
+    file_pattern = r".*(report\.json|quality\.json|selection\.json|submission\.csv)$"
+    if stage["name"] == "final":
+        file_pattern = (
+            r".*(report\.json|quality\.json|selection\.json|submission\.csv|"
+            r"detector\.pt|refiner\.pt)$"
+        )
     output = cli(
         "kernels",
         "output",
@@ -227,7 +237,7 @@ def fetch(record, stage):
         str(home),
         "--force",
         "--file-pattern",
-        r".*(report\.json|quality\.json|selection\.json|submission\.csv)$",
+        file_pattern,
     )
     (home.parent / "fetch.log").write_text(output)
     report_name = (
@@ -247,6 +257,17 @@ def fetch(record, stage):
         or report["source_sha256"] != record["source_sha256"]
     ):
         raise ValueError("Stage completion/source lineage mismatch")
+    if (
+        stage["name"] == "final"
+        and stage.get("manual_gate_override")
+        and (
+            report.get("manual_gate_override") is not True
+            or report.get("assessment_full_refit_gate") is not False
+            or report.get("execution_source_sha256")
+            != stage.get("execution_source_sha256")
+        )
+    ):
+        raise ValueError("Final override provenance mismatch")
     if stage["name"].startswith("fold-"):
         fold = record["folds"][int(stage["name"].split("-")[-1])]
         if report["train_names"] != fold["train"] or report["held_names"] != fold["held"]:
@@ -282,10 +303,33 @@ def verify_final(report, home, expected):
             counts[name] += 1
     if counts != report["counts"] or not seen:
         raise ValueError("Submission count mismatch")
+    for filename, field in (
+        ("detector.pt", "detector_sha256"),
+        ("refiner.pt", "refiner_sha256"),
+    ):
+        weights = list(home.rglob(filename))
+        if len(weights) != 1 or core.digest_bytes(weights[0].read_bytes()) != report[field]:
+            raise ValueError(f"{filename} hash mismatch")
     return str(files[0].relative_to(ROOT))
 
 
 def monitor(record, manual_gate_override=False):
+    manual_gate_override = manual_gate_override or bool(record.get("manual_gate_override"))
+    if manual_gate_override:
+        final = next(s for s in record["stages"] if s["name"] == "final")
+        if final["status"] != "prepared" and "execution_source_sha256" not in final:
+            config_path = ROOT / record["directory"] / "final/task-config.json"
+            config = json.loads(config_path.read_text())
+            if (
+                config.get("run_id") != record["run_id"]
+                or config.get("source_sha256") != record["source_sha256"]
+                or config.get("stage") != "final"
+                or config.get("manual_gate_override") is not True
+            ):
+                raise ValueError("Cannot restore final override provenance")
+            final["execution_source_sha256"] = config["execution_source_sha256"]
+            final["manual_gate_override"] = True
+            write_json(RECORD, record)
     for stage in record["stages"]:
         if stage["status"] == "complete":
             if (
@@ -398,11 +442,12 @@ def main():
             assessment = next(s for s in record["stages"] if s["name"] == "assess")
             if assessment["status"] != "complete":
                 raise RuntimeError("The assessment must complete before overriding its gate")
-            record["manual_gate_override"] = {
-                "authorized_at": datetime.now(UTC).isoformat(),
-                "assessment_full_refit_gate": assessment["report"]["full_refit_gate"],
-                "assessment82_pq": assessment["report"]["assessment82"]["pq"],
-            }
+            if "manual_gate_override" not in record:
+                record["manual_gate_override"] = {
+                    "authorized_at": datetime.now(UTC).isoformat(),
+                    "assessment_full_refit_gate": assessment["report"]["full_refit_gate"],
+                    "assessment82_pq": assessment["report"]["assessment82"]["pq"],
+                }
             record.pop("error", None)
             record.pop("stopped_at", None)
             write_json(RECORD, record)

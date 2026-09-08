@@ -88,6 +88,14 @@ def test_first_blocked_pilot_split_is_frozen_and_purged():
     days = {name: datetime.strptime(name[:14], "%Y%m%d%H%M%S").date().toordinal() for name in names}
     held_back = split["quality_fit"] + split["quality_calibration"] + split["assessment"]
     assert min(abs(days[a] - days[b]) for a in split["fitting"] for b in held_back) > 7
+    assert (
+        min(
+            abs(days[a] - days[b])
+            for a in split["quality_fit"]
+            for b in split["quality_calibration"]
+        )
+        > 7
+    )
 
 
 def test_prompt_association_keeps_partial_object_and_rejects_merges():
@@ -131,7 +139,12 @@ def test_padded_crop_marks_only_real_roi_pixels_valid():
 def test_artifact_audit_rejects_complete_run_with_all_empty_masks():
     report = {
         "status": "complete",
-        "training": {"nonfinite_batches": 1},
+        "training": {
+            "nonfinite_batches": 1,
+            "last_loss": 0.2,
+            "minimum_loss": 0.2,
+            "maximum_loss": 0.8,
+        },
         "assessment": {"native": {"pq": 0.0}, "native82": {"pq": 0.0}},
     }
     candidates = {"image.jpeg": [{"native_area": 0}, {"native_area": 0}]}
@@ -155,3 +168,33 @@ def test_artifact_audit_accepts_finite_noncollapsed_run():
     }
     candidates = {"image.jpeg": [{"native_area": 100}, {"native_area": 0}]}
     assert audit.audit_payload(report, candidates) == []
+
+
+def test_artifact_audit_reports_malformed_numbers_instead_of_crashing():
+    report = {
+        "status": "complete",
+        "training": {"last_loss": "not-a-number"},
+        "assessment": {"native": {"pq": None}, "native82": {"pq": "bad"}},
+    }
+    candidates = {"image.jpeg": [{"native_area": None}, {"native_area": "12.5"}]}
+    issues = audit.audit_payload(report, candidates)
+    assert "training last_loss is missing or non-finite" in issues
+    assert "candidate 0 native_area is invalid" in issues
+    assert "candidate 1 native_area is invalid" in issues
+    assert "assessment native PQ is missing or non-finite" in issues
+    assert "assessment native82 PQ is missing or non-finite" in issues
+    assert "run was marked complete despite integrity failures" in issues
+
+
+def test_artifact_audit_requires_complete_report_metrics():
+    report = {"status": "complete", "training": {}, "assessment": {}}
+    candidates = {"image.jpeg": [{"native_area": 10}]}
+    issues = audit.audit_payload(report, candidates)
+    assert "training nonfinite_batches is missing or invalid" in issues
+    assert "training last_loss is missing or non-finite" in issues
+    assert "assessment native PQ is missing or non-finite" in issues
+    assert "assessment native82 PQ is missing or non-finite" in issues
+
+
+def test_artifact_audit_rejects_non_object_report():
+    assert audit.audit_payload([], {}) == ["report payload is not an object"]

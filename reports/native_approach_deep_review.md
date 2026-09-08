@@ -1,9 +1,9 @@
 # Native reconstruction v4: deep review and repair report
 
 Review date: **September 8, 2026 (UTC)**. Reviewed implementation: commits
-`58651c6` and `249400a`, failed run `20260908-104235`, its downloaded artifacts,
-the Consensus v3 artifacts, the current competition rules and leaderboard, and
-the revised native implementation in this working tree.
+`58651c6`, `249400a`, and `1dec90b`; failed run `20260908-104235` and its
+downloaded artifacts; the Consensus v3 artifacts; the current competition rules
+and leaderboard; and two independent reviews of the revised implementation.
 
 ## Verdict
 
@@ -84,13 +84,19 @@ occur after unscaling. Sources: [PyTorch AMP documentation](https://docs.pytorch
 |---|---|---|
 | C1 | Kaggle `COMPLETE` was treated as model success | Added artifact audit plus remote/controller integrity gates |
 | C2 | Non-finite loss and parameters were allowed through training and inference | Added fail-fast finite loss, finite gradient norm, checkpoint parameter and probability checks |
-| C3 | Unverified fp16 was used on P100 | Corrected diagnostic uses FP32; AMP is explicit configuration |
+| C3 | Unverified fp16 was used on P100 | Stable baseline uses FP32; AMP is now only a later controlled profile, because the stabilization bundle does not isolate AMP as the cause |
 | C4 | Learning rate was aggressive for a new two-path decoder | Reduced AdamW LR from 3e-4 to 1e-4 and gradient clip from 5 to 2 |
-| C5 | Only the corrupt final checkpoint survived | Overwrites a verified last-finite checkpoint every 500 updates |
+| C5 | Only the corrupt final checkpoint survived | Writes a last-finite weight snapshot every 500 updates for diagnosis; full resumable state remains a blocked-pilot requirement |
 | C6 | Cumulative loss hid the failing batch | Reports rolling/last/min/max loss, gradient norm and AMP scale |
-| C7 | A randomly initialized absolute-mask head could discard a good prompt immediately | Decoder now predicts a zero-initialized residual over a softened seed/coarse prior |
+| C7 | A randomly initialized absolute-mask head could discard a good prompt immediately | Decoder now predicts a zero-initialized residual over the softened coarse mask; seed remains conditioning instead of being forcibly restored |
 | C8 | The inherited 0.55 threshold was applied to a new output head | Selects from a predeclared grid on the 24 calibration images and reports the 82-image result separately |
 | C9 | All-empty inference still produced a normal report | All-empty or non-finite inference now raises and cannot pass artifact verification |
+| C10 | Batch-wide BCE underweighted 128-pixel padded ROIs by as much as 16x versus 512-pixel ROIs | BCE is normalized per proposal before the batch mean, matching the Dice term and tiny-object objective |
+| C11 | Seed/coarse union prior reinstated detector pixels rejected by the global refiner at logit +2.94 | Prior now starts from the coarse refined mask only; seed and coarse/native alternatives remain separately measurable |
+| C12 | Seeded proposal shuffle defeated a single-image decode cache | Cache each grayscale training image after first use; the 495-image ceiling is about 2 GiB and fits the Kaggle host-memory envelope |
+| C13 | The corruption auditor could itself crash on null or malformed numbers | Invalid numeric fields and cache structure now become explicit audit findings |
+| C14 | Calibration membership was trusted implicitly and a Boolean diagnostic decision used consumed validation | Added uniqueness/subset/disjointness assertions and membership hashes; historical results are descriptive only and produce no continue/stop decision |
+| C15 | Native threshold-key construction was duplicated four times | Centralized key construction to prevent calibration/cache drift |
 
 ### High-impact scientific issues corrected or explicitly blocked
 
@@ -98,7 +104,7 @@ occur after unscaling. Sources: [PyTorch AMP documentation](https://docs.pytorch
 |---|---|---|
 | H1 | The old run was called a controlled pilot although it reused historical validation | It is now labeled a historical geometry diagnostic and cannot promote the approach |
 | H2 | The implementation skipped experiment B: realistic prompts in the matched 384 model | B is again a required isolated experiment before attributing gains to native geometry |
-| H3 | There was no R/Q/H implementation | Added a deterministic 60-day-block split: R 289, Q-fit 69, Q-calibration 34, H 87, purged 16 |
+| H3 | There was no R/Q/H implementation | Prepared and tested a deterministic 60-day-block split helper: R 289, Q-fit 69, Q-calibration 34, H 87, purged 16; the actual R-only training orchestration is still blocked |
 | H4 | Existing caches could indirectly leak H if their upstream model trained on H | Full pilot must regenerate detector/global outputs inside R; existing OOF caches remain diagnostic-only |
 | H5 | Binary RLE masks were described as probability maps | Code/docs call them coarse masks; full pilot must export actual global probabilities/features |
 | H6 | The “global encoder” was a frozen generic ImageNet encoder, not the trained global refiner | Accepted only as a diagnostic context substitute; full pilot must reuse the excluded global refiner encoder |
@@ -162,10 +168,11 @@ substitute for that lineage.
 Files changed:
 
 - `filament-native-reconstruction/audit.py`: deterministic artifact integrity check.
-- `filament-native-reconstruction/core.py`: frozen R/Q/H split, threshold selection,
-  complete conditioning bounds, tiling and blending primitives.
+- `filament-native-reconstruction/core.py`: prepared R/Q/H split assignment,
+  threshold selection, complete conditioning bounds, tiling and blending primitives.
 - `filament-native-reconstruction/remote.py`: residual refiner, FP32 stable path,
-  finite guards, checkpoint recovery, threshold calibration and stratified report.
+  per-proposal loss, finite guards, forensic weight snapshots, isolated threshold
+  calibration and stratified report.
 - `filament-native-reconstruction/run.py`: stable configuration and controller-side
   rejection of corrupt artifacts.
 - `filament-native-reconstruction/APPROACH.md`: corrected evidence scope, model
@@ -175,18 +182,23 @@ Local verification passes Ruff, Python compilation, the focused native tests and
 the complete repository suite. The failed run is preserved as
 `reports/native_training_20260908-104235.json` and its immutable output directory.
 
-A corrected P100 diagnostic was launched as run `20260908-152408`, kernel
+A numerical P100 diagnostic was launched as run `20260908-152408`, kernel
 `hariohmbhatt/sfsc-native-pilot-20260908-152408`. Its source and membership are
 hash-frozen; it uses FP32, LR 1e-4, residual prompt initialization, finite guards,
-and calibration-only threshold selection. The controller will download and verify
-all outputs. It creates no competition submission.
+and calibration-only threshold selection. Its frozen source predates the later
+review repairs C10-C15, so it can only test whether the numerical-collapse bundle
+produces finite, non-empty output. Its PQ must not be used to accept or reject the
+architecture. The controller will download and verify all outputs. It creates no
+competition submission.
 
 ## Remaining limits
 
-The corrected diagnostic can establish that the numerical repair works and
-whether native geometry has signal on historical validation. It cannot establish
-generalization, a winning score, or justify full fitting. Global probability
-export, the matched experiment B, R-only upstream fits, quality refitting, detailed
-size/length diagnostics, sliced proposal recovery and the second blocked pilot
-remain promotion requirements. The revised approach makes these hard gates, so a
-partial implementation can no longer be mistaken for the full solution.
+The numerical diagnostic can show whether the stabilization bundle produces
+finite output and describe retrospective behavior on historical validation. It
+cannot establish prospective signal, generalization, a winning score, or justify
+full fitting. Global probability
+export, letterboxed global geometry, the matched experiment B, actual R-only
+orchestration and upstream fits, fully resumable training state, quality refitting,
+detailed size/length diagnostics, sliced proposal recovery and the second blocked
+pilot remain promotion requirements. The revised approach makes these hard gates,
+so a partial implementation can no longer be mistaken for the full solution.

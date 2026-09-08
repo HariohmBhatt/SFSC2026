@@ -15,6 +15,8 @@ import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 
+import audit
+
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 RECORD = ROOT / "reports/native_training.json"
@@ -238,10 +240,17 @@ def fetch_and_verify(record: dict) -> dict:
         "native-validation-candidates.json": report["assessment"]["candidate_cache_sha256"],
         "training-samples.json": report["sample_manifest_sha256"],
     }
+    verified = {}
     for filename, expected_hash in expected.items():
         files = list(destination.rglob(filename))
         if len(files) != 1 or digest(files[0]) != expected_hash:
             raise ValueError(f"Artifact verification failed for {filename}")
+        verified[filename] = files[0]
+    audit_issues = audit.audit_payload(
+        report, json.loads(verified["native-validation-candidates.json"].read_text())
+    )
+    if audit_issues:
+        raise ValueError(f"Artifact integrity audit failed: {audit_issues}")
     training = report["training"]
     assessment = report["assessment"]
     if training.get("nonfinite_batches") != 0:

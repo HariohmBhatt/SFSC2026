@@ -183,8 +183,7 @@ class NativeDataset(Dataset):
     def __init__(self, samples, image_dir: Path, seed: int):
         self.samples, self.image_dir, self.seed = samples, image_dir, seed
         self.epoch = 0
-        self.cached_filename = None
-        self.cached_image = None
+        self.cached_images = {}
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -193,12 +192,12 @@ class NativeDataset(Dataset):
         return len(self.samples)
 
     def image(self, filename):
-        if self.cached_filename != filename:
-            self.cached_filename = filename
-            self.cached_image = cv2.imread(str(self.image_dir / filename), cv2.IMREAD_GRAYSCALE)
-            if self.cached_image is None:
+        if filename not in self.cached_images:
+            image = cv2.imread(str(self.image_dir / filename), cv2.IMREAD_GRAYSCALE)
+            if image is None:
                 raise FileNotFoundError(filename)
-        return self.cached_image
+            self.cached_images[filename] = image
+        return self.cached_images[filename]
 
     def __getitem__(self, index):
         sample = self.samples[index]
@@ -313,7 +312,7 @@ class NativeRefiner(nn.Module):
         return self
 
     def forward(self, local, global_tensor):
-        prompt_prior = torch.maximum(local[:, 1:2], local[:, 2:3]).clamp(0.05, 0.95)
+        prompt_prior = local[:, 2:3].clamp(0.05, 0.95)
         prompt_logit = torch.logit(prompt_prior)
         local = (local - self.local_mean) / self.local_std
         global_tensor = (global_tensor - self.global_mean) / self.global_std
@@ -335,8 +334,10 @@ def masked_loss(logits, targets, valid):
     logits = logits.float()
     targets = targets.float()
     valid = valid.float()
-    bce = (F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * valid).sum()
-    bce = bce / valid.sum().clamp_min(1)
+    bce_pixels = F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * valid
+    bce = (
+        bce_pixels.sum(dim=(1, 2, 3)) / valid.sum(dim=(1, 2, 3)).clamp_min(1)
+    ).mean()
     probabilities = logits.sigmoid() * valid
     targets = targets * valid
     intersection = (probabilities * targets).sum(dim=(1, 2, 3))
@@ -520,6 +521,10 @@ def candidate_score(candidate):
     return detector_score * math.sqrt(max(float(candidate["refiner_score"]), 0.0))
 
 
+def native_key(threshold: float) -> str:
+    return f"native_{threshold:.2f}".replace(".", "_")
+
+
 def assemble(candidates, kind):
     masks, scores = [], []
     for candidate in candidates:
@@ -571,8 +576,19 @@ def assess(model, paths, indices, device):
     )
     cache = json.loads(validation_path.read_text())
     names = CONFIG["validation_names"]
+    if not names or len(names) != len(set(names)):
+        raise ValueError("Validation names must be non-empty and unique")
     if set(cache) != set(names):
         raise ValueError("Validation cache membership mismatch")
+    calibration_names = CONFIG["calibration_names"]
+    if not calibration_names or len(calibration_names) != len(set(calibration_names)):
+        raise ValueError("Calibration names must be non-empty and unique")
+    calibration = set(calibration_names)
+    if not calibration < set(names):
+        raise ValueError("Calibration must be a strict subset of validation")
+    other = [name for name in names if name not in calibration]
+    if not other or calibration.intersection(other):
+        raise ValueError("Calibration and assessment memberships must be disjoint")
     baseline, baseline_per_image = evaluate(cache, names, indices, "refined")
     if abs(baseline["pq"] - CONFIG["expected_control_pq"]) > 1e-10:
         raise ValueError("Failed to reproduce the frozen control PQ")
@@ -590,7 +606,7 @@ def assess(model, paths, indices, device):
                 np.quantile(probability, [0.0, 0.5, 0.9, 0.99, 1.0]).tolist()
             )
             for threshold in thresholds:
-                key = f"native_{threshold:.2f}".replace(".", "_")
+                key = native_key(threshold)
                 native_mask = full_mask(probability, bounds, seed.shape, threshold)
                 candidate[key] = encode(native_mask)
                 candidate[f"{key}_area"] = int(native_mask.sum())
@@ -602,24 +618,22 @@ def assess(model, paths, indices, device):
                 images_total=len(names),
                 windows=total_windows,
             )
-    calibration = set(CONFIG["calibration_names"])
-    other = [name for name in names if name not in calibration]
     calibration_grid = []
     for threshold in thresholds:
-        key = f"native_{threshold:.2f}".replace(".", "_")
+        key = native_key(threshold)
         metrics, _ = evaluate(cache, sorted(calibration), indices, key)
         calibration_grid.append({"threshold": threshold, **metrics})
     selected_threshold = core.choose_threshold(
         [(row["threshold"], row["pq"]) for row in calibration_grid],
         CONFIG["mask_threshold_default"],
     )
-    selected_key = f"native_{selected_threshold:.2f}".replace(".", "_")
+    selected_key = native_key(selected_threshold)
     for candidates in cache.values():
         for candidate in candidates:
             candidate["native"] = candidate[selected_key]
             candidate["native_area"] = candidate[f"{selected_key}_area"]
             for threshold in thresholds:
-                key = f"native_{threshold:.2f}".replace(".", "_")
+                key = native_key(threshold)
                 candidate.pop(key)
                 candidate.pop(f"{key}_area")
     native, native_per_image = evaluate(cache, names, indices, "native")
@@ -636,12 +650,6 @@ def assess(model, paths, indices, device):
     total_candidates = sum(len(candidates) for candidates in cache.values())
     if nonempty_candidates == 0:
         raise RuntimeError("Native reconstruction collapsed to all-empty masks")
-    gate = (
-        native["pq"] - baseline["pq"] >= 0.015
-        and native_other["pq"] - baseline_other["pq"] >= 0.01
-        and bootstrap["ci95"][0] > 0
-        and abs(native["pq"] - native["one_to_one_pq"]) <= 1e-8
-    )
     cache_path = WORK / "native-validation-candidates.json"
     write_json(cache_path, cache)
     return {
@@ -651,9 +659,14 @@ def assess(model, paths, indices, device):
         "baseline82": baseline_other,
         "native82": native_other,
         "delta82": native_other["pq"] - baseline_other["pq"],
-        "paired_block_bootstrap82": bootstrap,
-        "diagnostic_gate": gate,
+        "retrospective_paired_block_bootstrap82": bootstrap,
         "evidence_scope": "historical-validation geometry diagnostic",
+        "calibration_membership_sha256": hashlib.sha256(
+            json.dumps(sorted(calibration)).encode()
+        ).hexdigest(),
+        "assessment_membership_sha256": hashlib.sha256(
+            json.dumps(sorted(other)).encode()
+        ).hexdigest(),
         "selected_mask_threshold": selected_threshold,
         "calibration_grid": calibration_grid,
         "nonempty_candidates": nonempty_candidates,

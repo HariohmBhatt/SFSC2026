@@ -106,10 +106,13 @@ Also pool the frozen global encoder's last feature map, project it to 64 channel
 and broadcast that vector into the local decoder bottleneck. This explicit
 whole-ROI feature path carries context beyond the cropped probability map. Train
 the projection with the local decoder; cache only detached global features.
-Predict a residual over a softened prompt prior and initialize the residual head
-at zero. This preserves the starting instance identity while still allowing the
-model to add and remove pixels. Retain seed, global and native alternatives for
-the later quality stage; the residual prior is not a deployment fallback rule.
+Predict a residual over the softened global-refiner mask and initialize the
+residual head at zero. Keep the detector seed as a conditioning channel, but do
+not union it into the prior: doing so would restore pixels the global refiner
+already rejected at a large positive logit. This initialization preserves the
+current refined alternative while allowing the model to add and remove pixels.
+Retain seed, global and native alternatives for the later quality stage; the
+residual prior is not a deployment fallback rule.
 
 Windows are **512 original-image pixels**, stride 384; no downsampling to fit a
 large ROI into one window. Cover the full ROI, including global-confident
@@ -311,8 +314,9 @@ Run one P100 job at a time, after the current v3 run. Reuse verified outputs onl
 where membership and source hashes permit it. No Mask2Former, larger encoder,
 custom CUDA extension or foundation-model fine-tuning is a prerequisite.
 
-Start the local path at batch 2, accumulation 4, FP16 AMP, AdamW lr 3e-4 and
-weight decay 1e-4. Benchmark AMP against FP32 on P100; do not assume a Tensor Core
+Start the stable local path at batch 2, accumulation 4, FP32, AdamW lr 1e-4,
+weight decay 1e-4 and gradient clipping at 2. Treat FP16 AMP as a controlled
+training-only profile after the FP32 path is verified; do not assume a Tensor Core
 speedup or use BF16. Freeze pretrained encoder BatchNorm running statistics and
 use GroupNorm in newly added decoder layers; accumulation does not fix noisy
 batch-two normalization statistics. Preserve the proven detector/global schedules in controls.

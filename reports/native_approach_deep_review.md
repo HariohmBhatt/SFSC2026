@@ -182,14 +182,16 @@ Local verification passes Ruff, Python compilation, the focused native tests and
 the complete repository suite. The failed run is preserved as
 `reports/native_training_20260908-104235.json` and its immutable output directory.
 
-A numerical P100 diagnostic was launched as run `20260908-152408`, kernel
-`hariohmbhatt/sfsc-native-pilot-20260908-152408`. Its source and membership are
-hash-frozen; it uses FP32, LR 1e-4, residual prompt initialization, finite guards,
-and calibration-only threshold selection. Its frozen source predates the later
-review repairs C10-C15, so it can only test whether the numerical-collapse bundle
-produces finite, non-empty output. Its PQ must not be used to accept or reject the
-architecture. The controller will download and verify all outputs. It creates no
-competition submission.
+The obsolete numerical-only run `20260908-152408` was stopped at the user's
+request. The reviewed P100 diagnostic then ran as `20260908-162230`, kernel
+`hariohmbhatt/sfsc-native-pilot-20260908-162230`, from source hash
+`dd073bd7322ac6fca197d48206cb43ea4f68bde3ef6c20bbe2a1ff389c09b4fb`.
+All artifact hashes and integrity checks passed: 4,000 FP32 updates completed with
+zero non-finite batches, and 1,713/1,723 candidate masks were non-empty. Historical
+PQ changed from 0.435179 to 0.435553 (+0.000374); on the non-calibration 82 images
+it changed from 0.434862 to 0.435309 (+0.000447), with paired block-bootstrap 95%
+interval [-0.000246, 0.001787]. This is indistinguishable from the control and far
+below the +0.015 pilot target, so it does not justify submission or full fitting.
 
 ## Remaining limits
 

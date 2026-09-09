@@ -280,6 +280,8 @@ def monitor(record: dict) -> None:
             print(json.dumps({"status_poll_error": str(error), "attempt": status_failures}))
             time.sleep(30)
             continue
+        record.pop("error", None)
+        record.pop("stopped_at", None)
         record.update(
             status="running",
             remote_status=status,

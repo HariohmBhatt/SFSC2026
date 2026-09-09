@@ -27,10 +27,17 @@ def reconcile(
     minimum_area: int,
     duplicate_iou: float = 0.6,
 ) -> tuple[list[np.ndarray], list[dict]]:
-    """Suppress cross-view duplicates, then paint masks in score order."""
+    """Keep the control masks intact, then add nonduplicate crop masks."""
     if minimum_area <= 0 or not 0 < duplicate_iou < 1:
         raise ValueError("Invalid reconciliation configuration")
-    ranked = sorted(enumerate(candidates), key=lambda item: (-float(item[1]["score"]), item[0]))
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            item[1]["source"] != "whole",
+            -float(item[1]["score"]),
+            item[0],
+        ),
+    )
     accepted: list[tuple[Mapping, np.ndarray]] = []
     for _, candidate in ranked:
         mask = np.asarray(candidate["mask"], dtype=bool)

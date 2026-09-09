@@ -111,8 +111,8 @@ def test_cross_view_reconciliation_removes_duplicate_but_keeps_distinct_masks():
     duplicate = rectangle(2, 12, 2, 12)
     distinct = rectangle(18, 28, 18, 28)
     rows = [
-        {"mask": first, "score": 0.8, "source": "whole"},
-        {"mask": duplicate, "score": 0.7, "source": "crop:0:0"},
+        {"mask": first, "score": 0.6, "source": "whole"},
+        {"mask": duplicate, "score": 0.9, "source": "crop:0:0"},
         {"mask": distinct, "score": 0.6, "source": "crop:768:768"},
     ]
     masks, provenance = recovery.reconcile(rows, minimum_area=4, duplicate_iou=0.6)

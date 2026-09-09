@@ -114,8 +114,9 @@ def crop_rows(image, detector, refiner, cfg, device):
     window = CONFIG["crop_size"]
     for x0, y0 in core.crop_origins(*image.shape, window):
         crop = image[y0 : y0 + window, x0 : x0 + window]
+        detector_input = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
         prediction = detector.predict(
-            crop,
+            detector_input,
             imgsz=window,
             conf=CONFIG["detector_confidence"],
             iou=CONFIG["detector_iou"],

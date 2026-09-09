@@ -379,6 +379,11 @@ def load_oof(index: CocoIndex):
             raise ValueError(f"Fold {fold} report is incomplete")
         if digest(path) != fold_report.get("candidates_sha256"):
             raise ValueError(f"Fold {fold} candidate lineage mismatch")
+        cache = json.loads(path.read_text())
+        train_names = set(fold_report["train_names"])
+        held_names = set(fold_report["held_names"])
+        if set(cache) != held_names or train_names & held_names:
+            raise ValueError(f"Fold {fold} train/held candidate membership mismatch")
         lineage.append(
             {
                 "fold": fold,
@@ -397,7 +402,6 @@ def load_oof(index: CocoIndex):
                 ),
             }
         )
-        cache = json.loads(path.read_text())
         if set(cache) & set(combined):
             raise ValueError("OOF memberships overlap")
         combined.update(cache)

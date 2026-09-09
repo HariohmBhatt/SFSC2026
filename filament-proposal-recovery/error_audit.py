@@ -295,7 +295,10 @@ def audit(candidates_path: Path, annotations_path: Path, score_threshold=0.3, mi
         "fn": int(fn),
     }
     candidate_hash = digest(candidates_path)
-    default_lineage = candidate_hash == EXPECTED_CANDIDATES_SHA256
+    is_default_input = candidates_path.resolve() == DEFAULT_CANDIDATES.resolve()
+    if is_default_input and candidate_hash != EXPECTED_CANDIDATES_SHA256:
+        raise ValueError(f"Default control cache lineage mismatch: {candidate_hash}")
+    default_lineage = is_default_input
     model_root = candidates_path.parent / "models/fold_0"
     model_hashes = {
         name: digest(model_root / name) if (model_root / name).exists() else None

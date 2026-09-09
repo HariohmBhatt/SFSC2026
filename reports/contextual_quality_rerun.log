@@ -1,0 +1,401 @@
+OOF targets 100/495
+OOF targets 200/495
+OOF targets 300/495
+OOF targets 400/495
+validation features 20/106
+validation features 40/106
+validation features 60/106
+validation features 80/106
+validation features 100/106
+{
+  "status": "complete",
+  "scope": "retrospective historical contextual-quality diagnostic; cannot promote",
+  "input_hashes": {
+    "annotations": "5da9e92b5a1a1947fd5d57adb6688269625c48ec1ef884daf2a01618c9ed54a1",
+    "validation_candidates": "d47bb86b19359ce00e92fb32540856e5581bcbadd7d1f112b8a1f05e0abd56b6",
+    "membership": "fd35f250012b7aba519c1bae53eb81721d8fecccc80595d5eeb728d851826efe",
+    "model": "8df2a6ac57e314eddb72167be41534e76357c117c0bb185d7c18605f2ba461cd",
+    "validation_features": "7be0bfc5566ab4c36e5d13bd88d557d614af2fc4f82f15831d7635f5565e9055",
+    "implementation": "fde7025a994bbe051c7acc9a25f185a99858a45b072fa63d3f34ab5b5fd79414"
+  },
+  "oof_lineage": [
+    {
+      "fold": 0,
+      "candidates": "outputs/consensus-20260907-125349/fold-0/results/consensus/fold-0-candidates.json",
+      "candidates_sha256": "b761fbe57b574ab17fa97bb6df32e135a5318eeda0c269bbb7835218365c77d7",
+      "report": "outputs/consensus-20260907-125349/fold-0/results/consensus/fold-0-report.json",
+      "report_sha256": "7cede27df235e0699d643b6e01b249fdd5f957d1f7301bf2c8f771cb1ed0366a",
+      "source_sha256": "80407594f617eba41ad5d63d47f9c51eb81ebc1efee33c2c298849f9bd509bab",
+      "detector_sha256": "b339054524637b43d2ca1f4cef0c64555835ee0036f03f50ec1f1c0a79e5d6c6",
+      "refiner_sha256": "b074de1f8dff703b8b0b5cd2f03414c67f048224021cb94e9de8e29ab29b8bfd",
+      "train_names_sha256": "0beacc5c2236aaeb0ccd181a1f009311f98a357c6168bf58685bb3d51a4fda5f",
+      "held_names_sha256": "a4f28b3bdfb6ff09f464f115a3ee310b4b3c54f23a405cf39e3c8e06a065bae4"
+    },
+    {
+      "fold": 1,
+      "candidates": "outputs/consensus-20260907-125349/fold-1/results/consensus/fold-1-candidates.json",
+      "candidates_sha256": "096f8cd59c2ad76d48b1d3f88b9d0ad45ce356269d1522666092de0cc6503806",
+      "report": "outputs/consensus-20260907-125349/fold-1/results/consensus/fold-1-report.json",
+      "report_sha256": "6fd5dfde95ceb4681219f2a0507f3aee1d409c73e20795e4174baa646016e699",
+      "source_sha256": "80407594f617eba41ad5d63d47f9c51eb81ebc1efee33c2c298849f9bd509bab",
+      "detector_sha256": "95cf23b532558221355f5e086b4a2fecc5b632bfadca6da01a4d39fdcbe09318",
+      "refiner_sha256": "b5da772e89bf528924ea6c33d1fd35871e1ead37d8ccea1041a0b8217644ee57",
+      "train_names_sha256": "48960724be40e074df3edbbd2cf91578436be4e1fc203ba5e2d04b141c467697",
+      "held_names_sha256": "0765fbc88e2d84bae5c82b0152b541293c9c63324ef3dbe007818383840fb182"
+    },
+    {
+      "fold": 2,
+      "candidates": "outputs/consensus-20260907-125349/fold-2/results/consensus/fold-2-candidates.json",
+      "candidates_sha256": "ac7f716fe4f926e48b1f44701caea2a5b1fe3bbb7b612aaaa3d7fa3a104277b9",
+      "report": "outputs/consensus-20260907-125349/fold-2/results/consensus/fold-2-report.json",
+      "report_sha256": "ba36c0edf44e63929713baa8f995557e765bd356ae73f010a8995968bf46ba97",
+      "source_sha256": "80407594f617eba41ad5d63d47f9c51eb81ebc1efee33c2c298849f9bd509bab",
+      "detector_sha256": "f1ced5dac1678263701b1a2fab58cb60e0fbe9802d54356324e6edceab39ac89",
+      "refiner_sha256": "3d99abeb82c7bc6faec29d0966a88e167084e04dbae9804963ca17861c889c27",
+      "train_names_sha256": "1e12dde877ade9e6226390aac9fdcfdb1325ef9bf1596e8534b8ff8a7b7e09b9",
+      "held_names_sha256": "5cf56b468d05e92fd646b363ed211a9739ab6bf1c31c96ae3bc74605126d4f8b"
+    }
+  ],
+  "model": {
+    "feature_names": [
+      "detector_logit",
+      "refiner_score",
+      "log_area",
+      "log_seed_area",
+      "area_ratio",
+      "seed_iou",
+      "log_aspect",
+      "fill",
+      "components",
+      "inside_intensity",
+      "ring_contrast",
+      "kind_refined",
+      "baseline_logit",
+      "log_proposal_count",
+      "detector_rank_fraction",
+      "detector_gap_to_best",
+      "max_other_mask_iou",
+      "other_overlap_count_010",
+      "other_overlap_count_050",
+      "relative_log_area"
+    ],
+    "interactions": [
+      [
+        "detector_logit",
+        "refiner_score"
+      ],
+      [
+        "baseline_logit",
+        "max_other_mask_iou"
+      ],
+      [
+        "max_other_mask_iou",
+        "other_overlap_count_050"
+      ],
+      [
+        "log_area",
+        "fill"
+      ],
+      [
+        "seed_iou",
+        "kind_refined"
+      ],
+      [
+        "inside_intensity",
+        "ring_contrast"
+      ],
+      [
+        "detector_rank_fraction",
+        "log_proposal_count"
+      ]
+    ],
+    "mean": [
+      -1.3295813433542756,
+      0.9583274828620271,
+      7.077011399751752,
+      7.145827913582962,
+      0.9390611083002652,
+      0.8978955212613409,
+      0.5944461747088514,
+      0.35015859859437387,
+      1.2396583778759005,
+      0.4660930911496725,
+      0.06037834285705512,
+      0.4998838019986056,
+      -1.3466161025174455,
+      3.059287390035856,
+      0.4995615436118312,
+      0.4775786174044823,
+      0.2523597547273889,
+      1.9534046014408553,
+      0.2949105275389263,
+      0.05701140090420114
+    ],
+    "scale": [
+      1.4282214936636386,
+      0.05,
+      0.8855433437745502,
+      0.8517871677941345,
+      0.09855089256515104,
+      0.11585414420970118,
+      0.4240430334024865,
+      0.18159659706176412,
+      0.7375273677161633,
+      0.05,
+      0.05,
+      0.49999998649799543,
+      1.421690863575767,
+      0.4441565321671143,
+      0.3063292916983907,
+      0.25020014829907516,
+      0.22980255902728847,
+      2.209178328570482,
+      0.6577729418136665,
+      0.8486123379393565
+    ],
+    "coefficients": [
+      -2.3053780378433655,
+      0.2200093691477794,
+      0.04602298575307379,
+      0.01959324759082142,
+      0.033816706407549316,
+      -0.11096481063005893,
+      -0.11928434306432824,
+      0.018465915036474146,
+      -0.009990998399126273,
+      -0.04435357465999751,
+      -0.02059554494651762,
+      0.09988421438397055,
+      0.22338443375018047,
+      0.21656044311668157,
+      0.0014315374431763453,
+      -0.17918520231685636,
+      -0.16448450667825432,
+      -0.03632981791879436,
+      -0.06275052889341871,
+      -0.008236802115859518,
+      -0.004321156426005544,
+      0.003304296583864625,
+      -0.003407766916295357,
+      0.02150469413694624,
+      -0.0004961215921348683,
+      0.008393841173814417,
+      -0.09363079023599609,
+      0.00029972636445731583,
+      -0.003321116783963269,
+      -0.01214926927643591,
+      -0.09538448409522518,
+      0.04251424348165454,
+      0.0001038273017813052,
+      -0.011016598713808246,
+      -0.0003641602506440727,
+      -0.03064051266602604,
+      0.014841083520513604,
+      0.030713900529327143,
+      -0.03219273514700473,
+      -0.011721298281738018,
+      0.0034955356917168324,
+      0.008071422669005235,
+      -0.050128812636869496,
+      0.017555356817096246,
+      0.04546324968543033,
+      0.0776814236980003,
+      -0.03393388183523356,
+      -0.003319742841930421
+    ],
+    "regularization": 0.05,
+    "examples": 17212,
+    "positive_examples": 3931,
+    "mean_assignment_target": 0.1166986966029335,
+    "loss": 0.30900251908688114,
+    "target": "duplicate-aware one-to-one E[IoU * 1(IoU > 0.5)]"
+  },
+  "selected": {
+    "threshold": 0.18,
+    "pq": 0.43619249500392177,
+    "one_to_one_pq": 0.43619249500392177,
+    "sq": 0.6759181224234324,
+    "rq": 0.6453333333333333,
+    "tp": 121,
+    "fp": 41,
+    "fn": 92,
+    "sum_iou": 81.78609281323533
+  },
+  "calibration_grid": [
+    {
+      "threshold": 0.04,
+      "pq": 0.3337735204165478,
+      "one_to_one_pq": 0.3337735204165478,
+      "sq": 0.6686237296086328,
+      "rq": 0.499194847020934,
+      "tp": 155,
+      "fp": 253,
+      "fn": 58,
+      "sum_iou": 103.63667808933809
+    },
+    {
+      "threshold": 0.06,
+      "pq": 0.35292088966614893,
+      "one_to_one_pq": 0.35292088966614893,
+      "sq": 0.6693732874001291,
+      "rq": 0.5272407732864675,
+      "tp": 150,
+      "fp": 206,
+      "fn": 63,
+      "sum_iou": 100.40599311001937
+    },
+    {
+      "threshold": 0.08,
+      "pq": 0.38692097537579717,
+      "one_to_one_pq": 0.38692097537579717,
+      "sq": 0.6693732874001291,
+      "rq": 0.5780346820809249,
+      "tp": 150,
+      "fp": 156,
+      "fn": 63,
+      "sum_iou": 100.40599311001937
+    },
+    {
+      "threshold": 0.1,
+      "pq": 0.3978854261127654,
+      "one_to_one_pq": 0.3978854261127654,
+      "sq": 0.6714316565652916,
+      "rq": 0.5925925925925926,
+      "tp": 144,
+      "fp": 129,
+      "fn": 69,
+      "sum_iou": 96.686158545402
+    },
+    {
+      "threshold": 0.12,
+      "pq": 0.41210805466053685,
+      "one_to_one_pq": 0.41210805466053685,
+      "sq": 0.6731098226122102,
+      "rq": 0.6122448979591837,
+      "tp": 135,
+      "fp": 93,
+      "fn": 78,
+      "sum_iou": 90.86982605264838
+    },
+    {
+      "threshold": 0.14,
+      "pq": 0.420838516556981,
+      "one_to_one_pq": 0.420838516556981,
+      "sq": 0.6746266295951604,
+      "rq": 0.6238095238095238,
+      "tp": 131,
+      "fp": 76,
+      "fn": 82,
+      "sum_iou": 88.37608847696602
+    },
+    {
+      "threshold": 0.16,
+      "pq": 0.4295410164309794,
+      "one_to_one_pq": 0.4295410164309794,
+      "sq": 0.6749930258201104,
+      "rq": 0.6363636363636364,
+      "tp": 126,
+      "fp": 57,
+      "fn": 87,
+      "sum_iou": 85.04912125333392
+    },
+    {
+      "threshold": 0.18,
+      "pq": 0.43619249500392177,
+      "one_to_one_pq": 0.43619249500392177,
+      "sq": 0.6759181224234324,
+      "rq": 0.6453333333333333,
+      "tp": 121,
+      "fp": 41,
+      "fn": 92,
+      "sum_iou": 81.78609281323533
+    },
+    {
+      "threshold": 0.2,
+      "pq": 0.4337866921714985,
+      "one_to_one_pq": 0.4337866921714985,
+      "sq": 0.6766330882162263,
+      "rq": 0.6410958904109589,
+      "tp": 117,
+      "fp": 35,
+      "fn": 96,
+      "sum_iou": 79.16607132129847
+    },
+    {
+      "threshold": 0.24,
+      "pq": 0.39987120778321417,
+      "one_to_one_pq": 0.39987120778321417,
+      "sq": 0.6781320997973065,
+      "rq": 0.5896656534954408,
+      "tp": 97,
+      "fp": 19,
+      "fn": 116,
+      "sum_iou": 65.77881368033873
+    },
+    {
+      "threshold": 0.28,
+      "pq": 0.3416044415358187,
+      "one_to_one_pq": 0.3416044415358187,
+      "sq": 0.6787140877882714,
+      "rq": 0.5033112582781457,
+      "tp": 76,
+      "fp": 13,
+      "fn": 137,
+      "sum_iou": 51.582270671908624
+    }
+  ],
+  "baseline": {
+    "pq": 0.43517902867330555,
+    "one_to_one_pq": 0.43517902867330555,
+    "sq": 0.6843686799468166,
+    "rq": 0.6358839050131926,
+    "tp": 723,
+    "fp": 314,
+    "fn": 514,
+    "sum_iou": 494.7985556015484
+  },
+  "full_validation": {
+    "pq": 0.4373861312869591,
+    "one_to_one_pq": 0.4373861312869591,
+    "sq": 0.6871435528457056,
+    "rq": 0.6365280289330922,
+    "tp": 704,
+    "fp": 271,
+    "fn": 533,
+    "sum_iou": 483.74906120337675
+  },
+  "control82": {
+    "pq": 0.4348618621071045,
+    "one_to_one_pq": 0.4348618621071045,
+    "sq": 0.6867193572441358,
+    "rq": 0.633245382585752,
+    "tp": 600,
+    "fp": 271,
+    "fn": 424,
+    "sum_iou": 412.0316143464815
+  },
+  "assessment82": {
+    "pq": 0.4376297968319449,
+    "one_to_one_pq": 0.4376297968319449,
+    "sq": 0.6894733591597623,
+    "rq": 0.6347305389221557,
+    "tp": 583,
+    "fp": 230,
+    "fn": 441,
+    "sum_iou": 401.9629683901414
+  },
+  "delta82": 0.0027679347248404373,
+  "paired_block_bootstrap82": {
+    "blocks": 43,
+    "replicates": 2000,
+    "ci95": [
+      -0.008496757993042444,
+      0.015206049498084491
+    ],
+    "median": 0.003033346143664767
+  },
+  "decision": "descriptive_only; blocked R/Q/H evidence is required for promotion",
+  "train_images": 495,
+  "calibration_images": 24,
+  "assessment_images": 82
+}

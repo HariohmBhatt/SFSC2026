@@ -1,0 +1,15 @@
+{
+  "id": "hariohmbhatt/sfsc-yolo-refiner-validation",
+  "title": "SFSC YOLO Refiner Validation",
+  "code_file": "train_validation.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "machine_shape": "NvidiaTeslaP100",
+  "dataset_sources": [],
+  "competition_sources": ["filament-segmentation-2026"],
+  "kernel_sources": [],
+  "model_sources": []
+}

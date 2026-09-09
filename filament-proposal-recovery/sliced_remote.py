@@ -114,7 +114,7 @@ def crop_rows(image, detector, refiner, cfg, device):
     window = CONFIG["crop_size"]
     for x0, y0 in core.crop_origins(*image.shape, window):
         crop = image[y0 : y0 + window, x0 : x0 + window]
-        detector_input = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+        detector_input = core.detector_input(crop)
         prediction = detector.predict(
             detector_input,
             imgsz=window,
@@ -187,6 +187,55 @@ def serialized(rows):
     ]
 
 
+def truth_size(area: int) -> str:
+    if area < 256:
+        return "tiny:<256"
+    if area < 1024:
+        return "small:256-1023"
+    if area < 4096:
+        return "medium:1024-4095"
+    return "large:>=4096"
+
+
+def update_size_recall(totals, truth_records, masks) -> None:
+    for record in truth_records:
+        grouped = {}
+        for truth in record:
+            grouped.setdefault(truth_size(int(decode(truth).sum())), []).append(truth)
+        for group, subset in grouped.items():
+            stats = metric_core.score([subset], masks)
+            totals.setdefault(group, np.zeros(2, dtype=float))
+            totals[group] += [stats[5], stats[7]]
+
+
+def size_recall(totals) -> dict:
+    return {
+        group: {
+            "matched": int(values[0]),
+            "missed": int(values[1]),
+            "recall": float(values[0] / values.sum()) if values.sum() else 0.0,
+        }
+        for group, values in sorted(totals.items())
+    }
+
+
+def grouped_comparison(baseline_stats, candidate_stats, key) -> dict:
+    groups = {}
+    for filename in baseline_stats:
+        groups.setdefault(key(filename), []).append(filename)
+    result = {}
+    for group, names in sorted(groups.items()):
+        baseline = metric_core.metrics(np.sum([baseline_stats[name] for name in names], axis=0))
+        candidate = metric_core.metrics(np.sum([candidate_stats[name] for name in names], axis=0))
+        result[str(group)] = {
+            "images": len(names),
+            "baseline": baseline,
+            "sliced": candidate,
+            "delta_pq": candidate["pq"] - baseline["pq"],
+        }
+    return result
+
+
 def main() -> None:
     try:
         if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (6, 0):
@@ -214,6 +263,11 @@ def main() -> None:
         cfg.use_tta = False
         baseline_stats, sliced_stats, candidate_cache = {}, {}, {}
         source_counts = {}
+        all_crop_sources = [
+            f"crop:{x0}:{y0}" for x0, y0 in core.crop_origins(2048, 2048, CONFIG["crop_size"])
+        ]
+        source_ablation_stats = {source: {} for source in all_crop_sources}
+        baseline_size_totals, sliced_size_totals = {}, {}
         started = time.monotonic()
         for number, filename in enumerate(CONFIG["validation_names"], 1):
             image = cv2.imread(str(paths["train"] / filename), cv2.IMREAD_GRAYSCALE)
@@ -234,10 +288,20 @@ def main() -> None:
                 duplicate_iou=CONFIG["cross_view_duplicate_iou"],
             )
             truth = truth_rles(filename, indices)
-            baseline_stats[filename] = metric_core.score(
-                truth, control_masks(raw_cache[filename])
-            ).tolist()
+            baseline_masks = control_masks(raw_cache[filename])
+            baseline_stats[filename] = metric_core.score(truth, baseline_masks).tolist()
             sliced_stats[filename] = metric_core.score(truth, masks).tolist()
+            update_size_recall(baseline_size_totals, truth, baseline_masks)
+            update_size_recall(sliced_size_totals, truth, masks)
+            for source in all_crop_sources:
+                source_masks, _ = core.reconcile(
+                    whole_candidates + [row for row in eligible_crops if row["source"] == source],
+                    minimum_area=CONFIG["minimum_area"],
+                    duplicate_iou=CONFIG["cross_view_duplicate_iou"],
+                )
+                source_ablation_stats.setdefault(source, {})[filename] = metric_core.score(
+                    truth, source_masks
+                ).tolist()
             candidate_cache[filename] = serialized(crop_candidates)
             source_counts[filename] = {
                 "whole_input": len(whole_candidates),
@@ -267,6 +331,23 @@ def main() -> None:
         )
         sliced82 = metric_core.metrics(np.sum([sliced_stats[name] for name in assessment], axis=0))
         interval = metric_core.bootstrap_delta(sliced_stats, baseline_stats, assessment, 2000)
+        source_ablation = {}
+        for source, stats_by_name in sorted(source_ablation_stats.items()):
+            names = sorted(stats_by_name)
+            source_metrics = metric_core.metrics(
+                np.sum([stats_by_name[name] for name in names], axis=0)
+            )
+            control_metrics = metric_core.metrics(
+                np.sum([baseline_stats[name] for name in names], axis=0)
+            )
+            source_ablation[source] = {
+                "images": len(names),
+                "baseline": control_metrics,
+                "whole_plus_source": source_metrics,
+                "delta_pq": source_metrics["pq"] - control_metrics["pq"],
+                "delta_tp": source_metrics["tp"] - control_metrics["tp"],
+                "delta_fp": source_metrics["fp"] - control_metrics["fp"],
+            }
         candidates_output = WORK / "sliced-validation-candidates.json"
         write_json(candidates_output, candidate_cache)
         report = {
@@ -283,6 +364,19 @@ def main() -> None:
             "delta82": sliced82["pq"] - baseline82["pq"],
             "retrospective_paired_block_bootstrap82": interval,
             "source_counts": source_counts,
+            "source_ablation": source_ablation,
+            "truth_size_recall": {
+                "baseline": size_recall(baseline_size_totals),
+                "sliced": size_recall(sliced_size_totals),
+            },
+            "subgroups": {
+                "site": grouped_comparison(
+                    baseline_stats, sliced_stats, lambda name: Path(name).stem[-2:]
+                ),
+                "year": grouped_comparison(
+                    baseline_stats, sliced_stats, lambda name: int(name[:4])
+                ),
+            },
             "elapsed_seconds": time.monotonic() - started,
             "peak_allocated_gb": torch.cuda.max_memory_allocated() / 2**30,
             "peak_reserved_gb": torch.cuda.max_memory_reserved() / 2**30,

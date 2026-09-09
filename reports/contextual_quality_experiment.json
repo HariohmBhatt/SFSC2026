@@ -1,13 +1,52 @@
 {
   "status": "complete",
-  "scope": "predeclared contextual duplicate-aware quality experiment",
+  "scope": "retrospective historical contextual-quality diagnostic; cannot promote",
   "input_hashes": {
     "annotations": "5da9e92b5a1a1947fd5d57adb6688269625c48ec1ef884daf2a01618c9ed54a1",
     "validation_candidates": "d47bb86b19359ce00e92fb32540856e5581bcbadd7d1f112b8a1f05e0abd56b6",
     "membership": "fd35f250012b7aba519c1bae53eb81721d8fecccc80595d5eeb728d851826efe",
     "model": "8df2a6ac57e314eddb72167be41534e76357c117c0bb185d7c18605f2ba461cd",
-    "validation_features": "7be0bfc5566ab4c36e5d13bd88d557d614af2fc4f82f15831d7635f5565e9055"
+    "validation_features": "7be0bfc5566ab4c36e5d13bd88d557d614af2fc4f82f15831d7635f5565e9055",
+    "implementation": "8706dfe3295c3b2fb1769a5011a6de733081288637c16f8de0526b8a7ba8d8f4"
   },
+  "oof_lineage": [
+    {
+      "fold": 0,
+      "candidates": "outputs/consensus-20260907-125349/fold-0/results/consensus/fold-0-candidates.json",
+      "candidates_sha256": "b761fbe57b574ab17fa97bb6df32e135a5318eeda0c269bbb7835218365c77d7",
+      "report": "outputs/consensus-20260907-125349/fold-0/results/consensus/fold-0-report.json",
+      "report_sha256": "7cede27df235e0699d643b6e01b249fdd5f957d1f7301bf2c8f771cb1ed0366a",
+      "source_sha256": "80407594f617eba41ad5d63d47f9c51eb81ebc1efee33c2c298849f9bd509bab",
+      "detector_sha256": "b339054524637b43d2ca1f4cef0c64555835ee0036f03f50ec1f1c0a79e5d6c6",
+      "refiner_sha256": "b074de1f8dff703b8b0b5cd2f03414c67f048224021cb94e9de8e29ab29b8bfd",
+      "train_names_sha256": "0beacc5c2236aaeb0ccd181a1f009311f98a357c6168bf58685bb3d51a4fda5f",
+      "held_names_sha256": "a4f28b3bdfb6ff09f464f115a3ee310b4b3c54f23a405cf39e3c8e06a065bae4"
+    },
+    {
+      "fold": 1,
+      "candidates": "outputs/consensus-20260907-125349/fold-1/results/consensus/fold-1-candidates.json",
+      "candidates_sha256": "096f8cd59c2ad76d48b1d3f88b9d0ad45ce356269d1522666092de0cc6503806",
+      "report": "outputs/consensus-20260907-125349/fold-1/results/consensus/fold-1-report.json",
+      "report_sha256": "6fd5dfde95ceb4681219f2a0507f3aee1d409c73e20795e4174baa646016e699",
+      "source_sha256": "80407594f617eba41ad5d63d47f9c51eb81ebc1efee33c2c298849f9bd509bab",
+      "detector_sha256": "95cf23b532558221355f5e086b4a2fecc5b632bfadca6da01a4d39fdcbe09318",
+      "refiner_sha256": "b5da772e89bf528924ea6c33d1fd35871e1ead37d8ccea1041a0b8217644ee57",
+      "train_names_sha256": "48960724be40e074df3edbbd2cf91578436be4e1fc203ba5e2d04b141c467697",
+      "held_names_sha256": "0765fbc88e2d84bae5c82b0152b541293c9c63324ef3dbe007818383840fb182"
+    },
+    {
+      "fold": 2,
+      "candidates": "outputs/consensus-20260907-125349/fold-2/results/consensus/fold-2-candidates.json",
+      "candidates_sha256": "ac7f716fe4f926e48b1f44701caea2a5b1fe3bbb7b612aaaa3d7fa3a104277b9",
+      "report": "outputs/consensus-20260907-125349/fold-2/results/consensus/fold-2-report.json",
+      "report_sha256": "ba36c0edf44e63929713baa8f995557e765bd356ae73f010a8995968bf46ba97",
+      "source_sha256": "80407594f617eba41ad5d63d47f9c51eb81ebc1efee33c2c298849f9bd509bab",
+      "detector_sha256": "f1ced5dac1678263701b1a2fab58cb60e0fbe9802d54356324e6edceab39ac89",
+      "refiner_sha256": "3d99abeb82c7bc6faec29d0966a88e167084e04dbae9804963ca17861c889c27",
+      "train_names_sha256": "1e12dde877ade9e6226390aac9fdcfdb1325ef9bf1596e8534b8ff8a7b7e09b9",
+      "held_names_sha256": "5cf56b468d05e92fd646b363ed211a9739ab6bf1c31c96ae3bc74605126d4f8b"
+    }
+  ],
   "model": {
     "feature_names": [
       "detector_logit",
@@ -346,7 +385,7 @@
     ],
     "median": 0.003033346143664767
   },
-  "promotion_gate": false,
+  "decision": "descriptive_only; blocked R/Q/H evidence is required for promotion",
   "train_images": 495,
   "calibration_images": 24,
   "assessment_images": 82

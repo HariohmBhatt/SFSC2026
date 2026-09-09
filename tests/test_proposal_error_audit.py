@@ -18,6 +18,10 @@ RECOVERY_MODULE = ROOT / "filament-proposal-recovery/core.py"
 recovery_spec = importlib.util.spec_from_file_location("proposal_recovery_core", RECOVERY_MODULE)
 recovery = importlib.util.module_from_spec(recovery_spec)
 recovery_spec.loader.exec_module(recovery)
+RUN_MODULE = ROOT / "filament-proposal-recovery/sliced_run.py"
+run_spec = importlib.util.spec_from_file_location("proposal_recovery_run", RUN_MODULE)
+sliced_run = importlib.util.module_from_spec(run_spec)
+run_spec.loader.exec_module(sliced_run)
 
 
 def rectangle(y0, y1, x0, x1, shape=(32, 32)):
@@ -82,6 +86,17 @@ def test_one_to_one_matching_prioritizes_number_of_matches():
     assert matches == {0: 1, 1: 0}
 
 
+def test_one_to_one_matching_prioritizes_cardinality_for_crowded_records():
+    iou = np.zeros((7, 7))
+    np.fill_diagonal(iou, 0.99)
+    for index in range(7):
+        iou[index, (index + 1) % 7] = 0.51
+    iou[6, 6] = 0.0
+    expected = {index: (index + 1) % 7 for index in range(7)}
+    assert audit.one_to_one_matches(iou) == expected
+    assert quality.one_to_one_matches(iou) == expected
+
+
 def test_assignment_targets_keep_one_alternative_and_remove_duplicate_credit():
     first = rectangle(2, 10, 2, 10)
     second = rectangle(18, 26, 18, 26)
@@ -104,6 +119,20 @@ def test_four_native_crop_views_cover_the_image_and_touch_expected_borders():
         (0, 768),
         (768, 768),
     ]
+
+
+def test_detector_input_expands_grayscale_without_changing_values():
+    grayscale = np.arange(12, dtype=np.uint8).reshape(3, 4)
+    detector_input = recovery.detector_input(grayscale)
+    assert detector_input.shape == (3, 4, 3)
+    assert all(np.array_equal(detector_input[..., channel], grayscale) for channel in range(3))
+
+
+def test_controller_rejects_stale_prepared_source():
+    current_hash = sliced_run.source_digest(sliced_run.source_bundle())
+    sliced_run.assert_source_fresh({"source_sha256": current_hash})
+    with np.testing.assert_raises_regex(ValueError, "Prepared source is stale"):
+        sliced_run.assert_source_fresh({"source_sha256": "0" * 64})
 
 
 def test_cross_view_reconciliation_removes_duplicate_but_keeps_distinct_masks():

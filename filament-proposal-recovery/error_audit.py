@@ -23,6 +23,10 @@ DEFAULT_CANDIDATES = (
 DEFAULT_ANNOTATIONS = ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
 DEFAULT_REPORT = ROOT / "reports/proposal_error_audit.json"
 DEFAULT_MARKDOWN = ROOT / "reports/proposal_error_audit.md"
+EXPECTED_CANDIDATES_SHA256 = "d47bb86b19359ce00e92fb32540856e5581bcbadd7d1f112b8a1f05e0abd56b6"
+EXPECTED_DETECTOR_SHA256 = "68016483e5ff218fa445d04ee10e1e54921e061981578fa96685b32a26662379"
+EXPECTED_REFINER_SHA256 = "d208b8fb4a2ef557898a8cae9b458daded6cfdb1bf979353c2b5c9224900009a"
+EXPECTED_CONTROL_PQ = 0.4351790286733054
 
 
 def digest(path: Path) -> str:
@@ -93,7 +97,8 @@ def one_to_one_matches(iou: np.ndarray, threshold: float = 0.5) -> dict[int, int
     if not iou.size:
         return {}
     eligible = iou > threshold
-    utility = eligible.astype(float) * 2 + np.where(eligible, iou, 0)
+    cardinality_bonus = min(iou.shape) + 1
+    utility = eligible.astype(float) * cardinality_bonus + np.where(eligible, iou, 0)
     rows, columns = linear_sum_assignment(utility, maximize=True)
     return {
         int(row): int(column)
@@ -246,6 +251,7 @@ def audit(candidates_path: Path, annotations_path: Path, score_threshold=0.3, mi
     raw_cache = json.loads(candidates_path.read_text())
     truths = load_truth_records(annotations_path, set(raw_cache))
     rows = []
+    control_totals = np.zeros(4, dtype=float)
     for filename in sorted(raw_cache):
         candidates = [
             {
@@ -256,6 +262,17 @@ def audit(candidates_path: Path, annotations_path: Path, score_threshold=0.3, mi
             for candidate in raw_cache[filename]
         ]
         for record_index, record in enumerate(truths[filename]):
+            final, _, _ = assemble_trace(candidates, score_threshold, minimum_area)
+            final_iou = pairwise_iou(record, final)
+            final_matches = one_to_one_matches(final_iou)
+            matched_iou = sum(final_iou[row, column] for row, column in final_matches.items())
+            matched = len(final_matches)
+            control_totals += [
+                matched_iou,
+                matched,
+                len(final) - matched,
+                len(record) - matched,
+            ]
             classified = classify_record(record, candidates, score_threshold, minimum_area)
             for row in classified:
                 row.update(
@@ -266,6 +283,32 @@ def audit(candidates_path: Path, annotations_path: Path, score_threshold=0.3, mi
                     size=truth_size(row["truth_area"]),
                 )
                 rows.append(row)
+    sum_iou, tp, fp, fn = control_totals
+    denominator = tp + (fp + fn) / 2
+    control = {
+        "pq": float(sum_iou / denominator) if denominator else 0.0,
+        "sq": float(sum_iou / tp) if tp else 0.0,
+        "rq": float(tp / denominator) if denominator else 0.0,
+        "sum_iou": float(sum_iou),
+        "tp": int(tp),
+        "fp": int(fp),
+        "fn": int(fn),
+    }
+    candidate_hash = digest(candidates_path)
+    default_lineage = candidate_hash == EXPECTED_CANDIDATES_SHA256
+    model_root = candidates_path.parent / "models/fold_0"
+    model_hashes = {
+        name: digest(model_root / name) if (model_root / name).exists() else None
+        for name in ("detector.pt", "refiner.pt")
+    }
+    if default_lineage:
+        if model_hashes != {
+            "detector.pt": EXPECTED_DETECTOR_SHA256,
+            "refiner.pt": EXPECTED_REFINER_SHA256,
+        }:
+            raise ValueError(f"Control model lineage mismatch: {model_hashes}")
+        if abs(control["pq"] - EXPECTED_CONTROL_PQ) > 1e-8:
+            raise ValueError(f"Control metric parity failed: {control}")
     by_size = {
         group: metrics_for_counts([row for row in rows if row["size"] == group])
         for group in sorted({row["size"] for row in rows})
@@ -280,11 +323,15 @@ def audit(candidates_path: Path, annotations_path: Path, score_threshold=0.3, mi
         "generated_at": datetime.now().astimezone().isoformat(),
         "inputs": {
             "candidates": str(candidates_path.relative_to(ROOT)),
-            "candidates_sha256": digest(candidates_path),
+            "candidates_sha256": candidate_hash,
             "annotations": str(annotations_path.relative_to(ROOT)),
             "annotations_sha256": digest(annotations_path),
             "images": len(raw_cache),
             "annotation_records": sum(len(value) for value in truths.values()),
+            "detector_sha256": model_hashes["detector.pt"],
+            "refiner_sha256": model_hashes["refiner.pt"],
+            "implementation_sha256": digest(Path(__file__)),
+            "lineage_verified": default_lineage,
         },
         "configuration": {
             "score_threshold": score_threshold,
@@ -295,6 +342,7 @@ def audit(candidates_path: Path, annotations_path: Path, score_threshold=0.3, mi
             "maximum_other_truth_coverage": 0.1,
         },
         "overall": metrics_for_counts(rows),
+        "control_metric": control,
         "by_size": by_size,
         "by_site": by_site,
         "rows": rows,

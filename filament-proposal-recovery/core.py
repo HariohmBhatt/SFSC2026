@@ -16,6 +16,13 @@ def crop_origins(height: int, width: int, window: int) -> list[tuple[int, int]]:
     return [(x, y) for y in ys for x in xs]
 
 
+def detector_input(image: np.ndarray) -> np.ndarray:
+    """Convert a grayscale crop to the three-channel array Ultralytics expects."""
+    if image.ndim != 2:
+        raise ValueError("Detector input must start as a grayscale image")
+    return np.repeat(image[..., None], 3, axis=2)
+
+
 def mask_iou(first: np.ndarray, second: np.ndarray) -> float:
     intersection = int(np.logical_and(first, second).sum())
     union = int(np.logical_or(first, second).sum())

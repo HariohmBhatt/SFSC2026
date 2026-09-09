@@ -75,6 +75,10 @@ def load_consensus_core():
 CORE = load_consensus_core()
 
 
+def digest_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
 def digest(path: Path) -> str:
     value = hashlib.sha256()
     with path.open("rb") as stream:
@@ -145,7 +149,8 @@ def one_to_one_matches(iou: np.ndarray, threshold: float = 0.5) -> dict[int, int
     if not iou.size:
         return {}
     eligible = iou > threshold
-    utility = eligible.astype(float) * 2 + np.where(eligible, iou, 0)
+    cardinality_bonus = min(iou.shape) + 1
+    utility = eligible.astype(float) * cardinality_bonus + np.where(eligible, iou, 0)
     rows, columns = linear_sum_assignment(utility, maximize=True)
     return {
         int(row): int(column)
@@ -365,9 +370,33 @@ def validation_alternatives(raw_cache) -> dict[str, list[dict[str, Any]]]:
 
 
 def load_oof(index: CocoIndex):
-    combined, training_rows = {}, []
+    combined, training_rows, lineage = {}, [], []
     for fold in range(3):
         path = next((OOF_ROOT / f"fold-{fold}/results").rglob(f"fold-{fold}-candidates.json"))
+        report_path = next((OOF_ROOT / f"fold-{fold}/results").rglob(f"fold-{fold}-report.json"))
+        fold_report = json.loads(report_path.read_text())
+        if fold_report.get("status") != "complete":
+            raise ValueError(f"Fold {fold} report is incomplete")
+        if digest(path) != fold_report.get("candidates_sha256"):
+            raise ValueError(f"Fold {fold} candidate lineage mismatch")
+        lineage.append(
+            {
+                "fold": fold,
+                "candidates": str(path.relative_to(ROOT)),
+                "candidates_sha256": digest(path),
+                "report": str(report_path.relative_to(ROOT)),
+                "report_sha256": digest(report_path),
+                "source_sha256": fold_report["source_sha256"],
+                "detector_sha256": fold_report["detector_sha256"],
+                "refiner_sha256": fold_report["refiner_sha256"],
+                "train_names_sha256": digest_bytes(
+                    json.dumps(fold_report["train_names"], sort_keys=True).encode()
+                ),
+                "held_names_sha256": digest_bytes(
+                    json.dumps(fold_report["held_names"], sort_keys=True).encode()
+                ),
+            }
+        )
         cache = json.loads(path.read_text())
         if set(cache) & set(combined):
             raise ValueError("OOF memberships overlap")
@@ -384,12 +413,12 @@ def load_oof(index: CocoIndex):
             training_rows.append(item)
         if number % 100 == 0:
             print(f"OOF targets {number}/{len(combined)}", flush=True)
-    return training_rows
+    return training_rows, lineage
 
 
 def main() -> None:
     index = CocoIndex(ANNOTATIONS)
-    training_rows = load_oof(index)
+    training_rows, oof_lineage = load_oof(index)
     model = fit_model(training_rows)
     MODEL.write_text(json.dumps(model, indent=2) + "\n")
     raw_cache = json.loads(VALIDATION.read_text())
@@ -428,14 +457,16 @@ def main() -> None:
     interval = CORE.bootstrap_delta(candidate_stats, baseline_stats, assessment)
     report = {
         "status": "complete",
-        "scope": "predeclared contextual duplicate-aware quality experiment",
+        "scope": "retrospective historical contextual-quality diagnostic; cannot promote",
         "input_hashes": {
             "annotations": digest(ANNOTATIONS),
             "validation_candidates": digest(VALIDATION),
             "membership": digest(MEMBERSHIP),
             "model": digest(MODEL),
             "validation_features": digest(VALIDATION_FEATURES),
+            "implementation": digest(Path(__file__)),
         },
+        "oof_lineage": oof_lineage,
         "model": model,
         "selected": selected,
         "calibration_grid": grid,
@@ -445,9 +476,7 @@ def main() -> None:
         "assessment82": candidate82,
         "delta82": candidate82["pq"] - baseline82["pq"],
         "paired_block_bootstrap82": interval,
-        "promotion_gate": bool(
-            candidate82["pq"] - baseline82["pq"] >= 0.015 and interval["ci95"][0] > 0
-        ),
+        "decision": "descriptive_only; blocked R/Q/H evidence is required for promotion",
         "train_images": 495,
         "calibration_images": len(calibration),
         "assessment_images": len(assessment),

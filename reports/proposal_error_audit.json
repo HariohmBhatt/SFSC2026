@@ -1,14 +1,18 @@
 {
   "status": "complete",
   "scope": "truth-assisted historical validation diagnostic; never deployment logic",
-  "generated_at": "2026-09-09T05:43:49.261690+00:00",
+  "generated_at": "2026-09-09T06:24:35.345362+00:00",
   "inputs": {
     "candidates": "outputs/yolo-refiner-validation/sfsc-yolo-refiner-validation/validation-candidates.json",
     "candidates_sha256": "d47bb86b19359ce00e92fb32540856e5581bcbadd7d1f112b8a1f05e0abd56b6",
     "annotations": "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json",
     "annotations_sha256": "5da9e92b5a1a1947fd5d57adb6688269625c48ec1ef884daf2a01618c9ed54a1",
     "images": 106,
-    "annotation_records": 169
+    "annotation_records": 169,
+    "detector_sha256": "68016483e5ff218fa445d04ee10e1e54921e061981578fa96685b32a26662379",
+    "refiner_sha256": "d208b8fb4a2ef557898a8cae9b458daded6cfdb1bf979353c2b5c9224900009a",
+    "implementation_sha256": "bf032dc7776ab6e044caf76530fd0a8f40cb4f7fde74bb62993e28654f9c07db",
+    "lineage_verified": true
   },
   "configuration": {
     "score_threshold": 0.3,
@@ -39,6 +43,15 @@
       "refinement_damage": 0.054474708171206226,
       "score_rejection": 0.4980544747081712
     }
+  },
+  "control_metric": {
+    "pq": 0.4351790286733054,
+    "sq": 0.6843686799468164,
+    "rq": 0.6358839050131926,
+    "sum_iou": 494.79855560154823,
+    "tp": 723,
+    "fp": 314,
+    "fn": 514
   },
   "by_size": {
     "large:>=4096": {

@@ -69,6 +69,28 @@ def frozen_split() -> dict:
     return json.loads(zlib.decompress(base64.b64decode(encoded)))
 
 
+def source_bundle() -> dict[str, str]:
+    return {
+        "core.py": (HERE / "core.py").read_text(),
+        "remote.py": (HERE / "sliced_remote.py").read_text(),
+        "metric_core.py": (ROOT / "filament-oof-consensus/core.py").read_text(),
+        "legacy_runtime.py": legacy_source(),
+    }
+
+
+def source_digest(source: dict[str, str]) -> str:
+    return digest_bytes(json.dumps(source, sort_keys=True).encode())
+
+
+def assert_source_fresh(record: dict) -> None:
+    current = source_digest(source_bundle())
+    if current != record["source_sha256"]:
+        raise ValueError(
+            "Prepared source is stale; cancel this record and run prepare again "
+            f"({record['source_sha256']} != {current})"
+        )
+
+
 def prepare() -> dict:
     if RECORD.exists():
         previous = json.loads(RECORD.read_text())
@@ -77,13 +99,8 @@ def prepare() -> dict:
     split = frozen_split()
     if len(split["validation"]) != 106 or len(split["calibration"]) != 24:
         raise ValueError("Unexpected frozen validation membership")
-    source = {
-        "core.py": (HERE / "core.py").read_text(),
-        "remote.py": (HERE / "sliced_remote.py").read_text(),
-        "metric_core.py": (ROOT / "filament-oof-consensus/core.py").read_text(),
-        "legacy_runtime.py": legacy_source(),
-    }
-    source_sha256 = digest_bytes(json.dumps(source, sort_keys=True).encode())
+    source = source_bundle()
+    source_sha256 = source_digest(source)
     membership = {"validation": split["validation"], "calibration": split["calibration"]}
     membership_sha256 = digest_bytes(json.dumps(membership, sort_keys=True).encode())
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -208,6 +225,7 @@ def fetch_and_verify(record: dict) -> dict:
 
 def monitor(record: dict) -> None:
     if record["status"] == "prepared":
+        assert_source_fresh(record)
         directory = build_kernel(record)
         record["status"] = "pushing"
         write_json(RECORD, record)

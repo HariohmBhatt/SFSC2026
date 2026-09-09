@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -21,6 +22,16 @@ def detector_input(image: np.ndarray) -> np.ndarray:
     if image.ndim != 2:
         raise ValueError("Detector input must start as a grayscale image")
     return np.repeat(image[..., None], 3, axis=2)
+
+
+def rle_for_decode(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize JSON-string or in-memory byte RLE counts for pycocotools."""
+    counts = value["counts"]
+    if isinstance(counts, str):
+        counts = counts.encode("ascii")
+    if not isinstance(counts, bytes):
+        raise TypeError("Compressed RLE counts must be bytes or an ASCII string")
+    return {"size": value["size"], "counts": counts}
 
 
 def mask_iou(first: np.ndarray, second: np.ndarray) -> float:

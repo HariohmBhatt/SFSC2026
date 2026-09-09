@@ -53,7 +53,7 @@ def source_file(filename: str, expected_hash: str | None = None) -> Path:
 
 
 def decode(value) -> np.ndarray:
-    return metric_core.decode(value)
+    return base.mask_utils.decode(core.rle_for_decode(value)).astype(bool)
 
 
 def encode(mask: np.ndarray) -> dict:

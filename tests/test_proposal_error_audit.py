@@ -128,6 +128,17 @@ def test_detector_input_expands_grayscale_without_changing_values():
     assert all(np.array_equal(detector_input[..., channel], grayscale) for channel in range(3))
 
 
+def test_rle_normalization_accepts_json_strings_and_in_memory_bytes():
+    assert recovery.rle_for_decode({"size": [2, 2], "counts": "abc"}) == {
+        "size": [2, 2],
+        "counts": b"abc",
+    }
+    assert recovery.rle_for_decode({"size": [2, 2], "counts": b"abc"}) == {
+        "size": [2, 2],
+        "counts": b"abc",
+    }
+
+
 def test_controller_rejects_stale_prepared_source():
     current_hash = sliced_run.source_digest(sliced_run.source_bundle())
     sliced_run.assert_source_fresh({"source_sha256": current_hash})

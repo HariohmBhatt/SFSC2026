@@ -131,9 +131,13 @@ def prepare() -> dict:
         "seed": 20260910,
         "epochs": 8,
         "crop_size": 1280,
-        "minimum_visible_pixels": 64,
+        "minimum_visible_pixels": 4,
         "detector_confidence": 0.03,
-        "thresholds": [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+        "maximum_detections_per_view": 100,
+        "crop_cluster_iou": 0.3,
+        "same_view_duplicate_iou": 0.7,
+        "cross_scale_confirmation_iou": 0.3,
+        "thresholds": [0.03, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
     }
     record = {
         "status": "prepared",

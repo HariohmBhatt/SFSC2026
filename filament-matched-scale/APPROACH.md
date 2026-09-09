@@ -13,7 +13,7 @@ cross-view support, border rejection, novelty filtering, and a regularized
 quality model all failed to produce a positive assessment delta. The learned
 gate selected no crop candidates.
 
-This identifies covariate shift as the actionable defect. The original detector
+This identifies crop covariate shift as one actionable defect. The original detector
 was trained on complete 2048 images resized to 1280, then asked to interpret
 native 1280 crops containing larger structures, partial instances, and different
 background statistics. Its confidence is not calibrated for that input policy.
@@ -21,34 +21,35 @@ background statistics. Its confidence is not calibrated for that input policy.
 ## Pilot
 
 Start from the verified whole-image detector that produced internal PQ 0.43518.
-Fine-tune it on 495 training images using five matched views per image:
+Preserve its candidates as the immutable control and fine-tune a separate crop
+specialist on 495 training images using four matched views per image:
 
-- one complete 2048 image, resized by the detector to 1280;
 - four overlapping native 1280 corner views;
-- every visible annotated instance with at least 64 pixels, clipped exactly as
+- every polygonizable visible component with at least four pixels, clipped exactly as
   it will appear during crop inference;
 - empty and sparse crop views retained as genuine detector negatives.
 
-The 2,475-view dataset is trained for eight fixed epochs with YOLO11l-seg,
+The 1,980-view dataset is trained for eight fixed epochs with YOLO11l-seg,
 batch two, AdamW at 2e-4, no mosaic, modest geometry and brightness augmentation,
-and the verified P100-compatible PyTorch build. This is approximately the same
-optimizer-batch budget as the original 36-epoch whole-image detector.
+lossless PNG crops, and the verified P100-compatible PyTorch build. Its roughly
+7,920 optimizer batches are close to the original detector's 8,910 batches.
 
-At validation, run the trained model on the whole image and the same four crop
-views. Map crop masks to original coordinates, refine them with the frozen
-verified refiner, preserve whole-image instances first, and add nonduplicate crop
-instances afterward. Choose between whole-only and multiscale inference plus one
-acceptance threshold on the frozen 24-image calibration subset. Report the
-remaining 82 images once with the exact control candidates and metric.
+At validation, run the specialist on the same four crop views. Map crop masks to
+original coordinates and refine them with the frozen verified refiner. The
+calibration comparison always starts from the exact cached control masks. It may
+add new crop instances, require cross-view support, or use crop agreement to
+rescue existing whole-image candidates whose combined score was below 0.30.
+Select one policy and its independent crop threshold, including 0.03–0.15, on
+the frozen 24-image calibration subset. Report the remaining 82 images once.
 
 ## Issues addressed
 
 | Observed failure | Matched-scale response |
 |---|---|
-| 256 score rejections | Relearn confidence at native object scale instead of applying a whole-image threshold to shifted crops. |
+| 256 score rejections | Retain low-score whole candidates and rescue them only when an independently trained crop specialist confirms the same mask. |
 | 100 absent or merged proposals | Larger native-scale objects and overlapping crop views improve proposal recall. |
 | 131 mask/refinement failures | Retrain the segmentation head on native masks and retain the proven refiner. |
-| 27 assembly or identity losses | Preserve whole instances before additive crop masks and suppress cross-view duplicates by mask IoU. |
+| 27 assembly or identity losses | Preserve exact whole instances; cluster same-view and cross-view crop proposals before painting. This reduces duplicate fragments but does not claim to repair every immutable-control assembly loss. |
 | 410 sliced false positives | Train all crop backgrounds as negatives; calibrate on predictions from the same view distribution. |
 
 ## Evidence and gates
@@ -73,7 +74,7 @@ time, so it follows only after matched-scale training is measured.
 ## Runtime and artifacts
 
 Expected P100 time is four to seven hours: dataset materialization, roughly
-9,900 optimizer batches, five-view inference on 106 images, metric evaluation,
+7,920 optimizer batches, four-view inference on 106 images, metric evaluation,
 and artifact export. The controller enforces Kaggle's nine-hour ceiling and
 persists the trained detector, validation candidate cache, report, source hash,
 membership hash, and exact configuration. It never submits automatically.

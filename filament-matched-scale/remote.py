@@ -6,7 +6,6 @@ import gc
 import hashlib
 import json
 import math
-import os
 import shutil
 import time
 import traceback
@@ -67,9 +66,26 @@ def release() -> None:
 def label_lines(masks) -> list[str]:
     result = []
     for mask in masks:
-        line = base.mask_to_yolo_polygon(mask, mask.shape[1], mask.shape[0])
-        if line is not None:
-            result.append(line)
+        contours, _ = cv2.findContours(
+            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        for contour in contours:
+            points = contour.reshape(-1, 2)
+            if len(points) < 3:
+                x, y, width, height = cv2.boundingRect(contour)
+                points = np.asarray(
+                    [
+                        [x, y],
+                        [x + max(width, 1), y],
+                        [x + max(width, 1), y + max(height, 1)],
+                        [x, y + max(height, 1)],
+                    ],
+                    dtype=np.float32,
+                )
+            points = points.astype(np.float32)
+            points[:, 0] = np.clip(points[:, 0] / mask.shape[1], 0, 1)
+            points[:, 1] = np.clip(points[:, 1] / mask.shape[0], 0, 1)
+            result.append("0 " + " ".join(f"{value:.6f}" for value in points.ravel()))
     return result
 
 
@@ -79,7 +95,14 @@ def materialize_training_data(paths, indices, selected_ids) -> tuple[Path, dict]
     labels = root / "labels"
     images.mkdir(parents=True, exist_ok=True)
     labels.mkdir(parents=True, exist_ok=True)
-    counts = {"whole": 0, "crop": 0, "instances": 0, "empty_views": 0}
+    counts = {
+        "crop": 0,
+        "instances": 0,
+        "empty_views": 0,
+        "ignored_fragments": 0,
+        "ignored_pixels": 0,
+    }
+    window = CONFIG["crop_size"]
     for number, filename in enumerate(CONFIG["train_names"], 1):
         image = cv2.imread(str(paths["train"] / filename), cv2.IMREAD_GRAYSCALE)
         if image is None or image.shape != (2048, 2048):
@@ -91,40 +114,38 @@ def materialize_training_data(paths, indices, selected_ids) -> tuple[Path, dict]
             for row in indices["annotations_by_image"].get(image_id, [])
             if not row.get("iscrowd", 0)
         ]
-        for view, x0, y0, x1, y1 in matched_core.training_views(2048, 2048, 1280):
+        for x0, y0 in matched_core.crop_origins(2048, 2048, window):
+            view, x1, y1 = f"crop:{x0}:{y0}", x0 + window, y0 + window
             safe_view = view.replace(":", "-")
             stem = f"{Path(filename).stem}__{safe_view}"
-            destination = images / f"{stem}.jpg"
-            if view == "whole":
-                if not destination.exists():
-                    os.symlink(paths["train"] / filename, destination)
-                visible = masks
-                counts["whole"] += 1
-            else:
-                if not destination.exists() and not cv2.imwrite(
-                    str(destination),
-                    image[y0:y1, x0:x1],
-                    [cv2.IMWRITE_JPEG_QUALITY, 95],
-                ):
-                    raise OSError(f"Could not write {destination}")
-                visible = [
-                    cropped
-                    for mask in masks
-                    if (
-                        cropped := matched_core.crop_instance(
-                            mask, x0, y0, x1, y1, CONFIG["minimum_visible_pixels"]
-                        )
-                    )
-                    is not None
-                ]
-                counts["crop"] += 1
+            destination = images / f"{stem}.png"
+            if not destination.exists() and not cv2.imwrite(str(destination), image[y0:y1, x0:x1]):
+                raise OSError(f"Could not write {destination}")
+            components = []
+            for mask in masks:
+                fragment = matched_core.crop_instance(mask, x0, y0, x1, y1, 1)
+                if fragment is not None:
+                    components.extend(matched_core.connected_components(fragment, 1))
+            visible = [
+                component
+                for component in components
+                if int(component.sum()) >= CONFIG["minimum_visible_pixels"]
+            ]
+            ignored = [
+                component
+                for component in components
+                if int(component.sum()) < CONFIG["minimum_visible_pixels"]
+            ]
+            counts["ignored_fragments"] += len(ignored)
+            counts["ignored_pixels"] += sum(int(fragment.sum()) for fragment in ignored)
+            counts["crop"] += 1
             lines = label_lines(visible)
             counts["instances"] += len(lines)
             counts["empty_views"] += int(not lines)
             (labels / f"{stem}.txt").write_text("\n".join(lines))
         if number % 50 == 0 or number == len(CONFIG["train_names"]):
             progress("data_materialization", images=number, **counts)
-    expected = len(CONFIG["train_names"]) * 5
+    expected = len(CONFIG["train_names"]) * 4
     if len(list(images.iterdir())) != expected or len(list(labels.iterdir())) != expected:
         raise ValueError("Matched-view dataset completeness failure")
     yaml = root / "data.yaml"
@@ -132,18 +153,27 @@ def materialize_training_data(paths, indices, selected_ids) -> tuple[Path, dict]
     return yaml, counts
 
 
-def train_detector(yaml: Path, initial: Path) -> Path:
+def model_fingerprint(model) -> str:
+    value = hashlib.sha256()
+    for name, tensor in sorted(model.model.state_dict().items()):
+        value.update(name.encode())
+        value.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return value.hexdigest()
+
+
+def train_detector(yaml: Path, initial: Path) -> tuple[Path, dict]:
     from ultralytics import YOLO
 
     model = YOLO(str(initial))
+    initial_weights = model_fingerprint(model)
     batches = [0]
 
     def on_batch(trainer):
         batches[0] += 1
+        loss = float(trainer.loss.detach().cpu())
+        if not np.isfinite(loss):
+            raise RuntimeError("Non-finite detector loss")
         if batches[0] == 1 or batches[0] % 100 == 0:
-            loss = float(trainer.loss.detach().cpu())
-            if not np.isfinite(loss):
-                raise RuntimeError("Non-finite detector loss")
             progress(
                 "detector_training",
                 epoch=int(trainer.epoch) + 1,
@@ -192,11 +222,17 @@ def train_detector(yaml: Path, initial: Path) -> Path:
     )
     output = WORK / "detector-matched-scale.pt"
     shutil.copy2(str(model.trainer.last), output)
-    if digest(output) == CONFIG["initial_detector_sha256"]:
-        raise ValueError("Detector checkpoint did not change")
+    final_weights = model_fingerprint(model)
+    if final_weights == initial_weights:
+        raise ValueError("Detector tensor values did not change")
+    training = {
+        "optimizer_batches": batches[0],
+        "initial_weights_sha256": initial_weights,
+        "final_weights_sha256": final_weights,
+    }
     del model
     release()
-    return output
+    return output, training
 
 
 def json_rle(mask: np.ndarray) -> dict:
@@ -218,11 +254,11 @@ def predict_view(image, detector_input, source, detector, refiner, device, cfg, 
         iou=0.6,
         agnostic_nms=True,
         retina_masks=True,
-        max_det=100,
+        max_det=CONFIG["maximum_detections_per_view"],
         verbose=False,
     )[0]
     if prediction.masks is None:
-        return []
+        return [], {"raw_detections": 0, "saturated": False}
     height, width = detector_input.shape[:2] if not isinstance(detector_input, str) else image.shape
     seeds = [mask.cpu().numpy().astype(bool) for mask in prediction.masks.data]
     if seeds and seeds[0].shape != (height, width):
@@ -249,7 +285,7 @@ def predict_view(image, detector_input, source, detector, refiner, device, cfg, 
             max(object_width, object_height) >= 720
             or max(object_width, object_height) / max(min(object_width, object_height), 1) >= 4.5
         )
-        mask = full_seed if long_object or int(refined.sum()) < 32 else refined
+        mask = full_seed if int(refined.sum()) < 32 else refined
         result.append(
             {
                 "source": source,
@@ -263,7 +299,10 @@ def predict_view(image, detector_input, source, detector, refiner, device, cfg, 
                 "mask": mask,
             }
         )
-    return result
+    return result, {
+        "raw_detections": len(prediction.boxes),
+        "saturated": len(prediction.boxes) >= CONFIG["maximum_detections_per_view"],
+    }
 
 
 def serialize(rows) -> list[dict]:
@@ -287,25 +326,35 @@ def infer_validation(paths, detector_path, refiner_path, indices):
     cfg = base.CFG()
     cfg.use_tta = False
     cache = {}
+    inference_stats = {
+        "views": 0,
+        "empty_views": 0,
+        "saturated_views": 0,
+        "raw_detections": 0,
+    }
+    window = CONFIG["crop_size"]
     started = time.monotonic()
     for number, filename in enumerate(CONFIG["validation_names"], 1):
         path = paths["train"] / filename
         image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        rows = predict_view(image, str(path), "whole", detector, refiner, device, cfg, (0, 0))
-        for x0, y0 in matched_core.crop_origins(2048, 2048, 1280):
-            crop = image[y0 : y0 + 1280, x0 : x0 + 1280]
-            rows.extend(
-                predict_view(
-                    image,
-                    np.repeat(crop[..., None], 3, axis=2),
-                    f"crop:{x0}:{y0}",
-                    detector,
-                    refiner,
-                    device,
-                    cfg,
-                    (x0, y0),
-                )
+        rows = []
+        for x0, y0 in matched_core.crop_origins(2048, 2048, window):
+            crop = image[y0 : y0 + window, x0 : x0 + window]
+            view_rows, view_stats = predict_view(
+                image,
+                np.repeat(crop[..., None], 3, axis=2),
+                f"crop:{x0}:{y0}",
+                detector,
+                refiner,
+                device,
+                cfg,
+                (x0, y0),
             )
+            rows.extend(view_rows)
+            inference_stats["views"] += 1
+            inference_stats["empty_views"] += int(not view_rows)
+            inference_stats["saturated_views"] += int(view_stats["saturated"])
+            inference_stats["raw_detections"] += view_stats["raw_detections"]
         cache[filename] = serialize(rows)
         if number % 10 == 0 or number == len(CONFIG["validation_names"]):
             write_json(WORK / "validation-candidates.partial.json", cache)
@@ -319,7 +368,11 @@ def infer_validation(paths, detector_path, refiner_path, indices):
     release()
     output = WORK / "validation-candidates.json"
     write_json(output, cache)
-    return cache, time.monotonic() - started
+    if set(cache) != set(CONFIG["validation_names"]) or not any(cache.values()):
+        raise ValueError("Validation candidate coverage failure")
+    if inference_stats["saturated_views"] / inference_stats["views"] > 0.05:
+        raise ValueError(f"Detector max-det saturation is too high: {inference_stats}")
+    return cache, time.monotonic() - started, inference_stats
 
 
 def truths(filename, indices):
@@ -337,7 +390,7 @@ def truths(filename, indices):
     ]
 
 
-def assemble(rows, threshold, mode):
+def crop_clusters(rows, threshold, require_cross_view):
     candidates = [
         {
             "mask": metric_core.decode(row["mask"]),
@@ -345,22 +398,102 @@ def assemble(rows, threshold, mode):
             "source": row["source"],
         }
         for row in rows
-        if float(row["score"]) >= threshold
-        and int(row["area"]) >= 64
-        and (mode == "multiscale" or row["source"] == "whole")
+        if float(row["score"]) >= threshold and int(row["area"]) >= 64
     ]
-    return recovery_core.reconcile(candidates, minimum_area=64, duplicate_iou=0.6)[0]
+    accepted = []
+    for candidate in sorted(candidates, key=lambda row: -row["score"]):
+        supporting_sources = {
+            other["source"]
+            for other in candidates
+            if other["source"] != candidate["source"]
+            and recovery_core.mask_iou(candidate["mask"], other["mask"])
+            >= CONFIG["crop_cluster_iou"]
+        }
+        if require_cross_view and not supporting_sources:
+            continue
+        duplicate = any(
+            recovery_core.mask_iou(candidate["mask"], previous["mask"])
+            >= (
+                CONFIG["crop_cluster_iou"]
+                if candidate["source"] != previous["source"]
+                else CONFIG["same_view_duplicate_iou"]
+            )
+            for previous in accepted
+        )
+        if not duplicate:
+            accepted.append(candidate)
+    return accepted
+
+
+def baseline_candidate_score(row):
+    detector_score = float(row["detector_score"])
+    return (
+        detector_score
+        if row.get("long_object_path", False)
+        else detector_score * math.sqrt(max(float(row["refiner_score"]), 0.0))
+    )
+
+
+def assemble(rows, baseline_rows, threshold, policy):
+    base_masks = baseline_masks(baseline_rows)
+    base = [{"mask": mask, "score": 1.0, "source": "whole"} for mask in base_masks]
+    require_cross_view = policy in {"confirmed_crop", "rescue_plus_confirmed_crop"}
+    crops = crop_clusters(rows, threshold, require_cross_view)
+    rescue = []
+    if policy in {"rescue", "rescue_plus_crop", "rescue_plus_confirmed_crop"}:
+        for row in baseline_rows:
+            score = baseline_candidate_score(row)
+            if score >= 0.3 or int(row["refined_area"]) < 64:
+                continue
+            mask = metric_core.decode(row["refined"])
+            confirming = [
+                crop["score"]
+                for crop in crops
+                if recovery_core.mask_iou(mask, crop["mask"])
+                >= CONFIG["cross_scale_confirmation_iou"]
+            ]
+            if not confirming or any(
+                recovery_core.mask_iou(mask, existing["mask"])
+                >= CONFIG["cross_scale_confirmation_iou"]
+                for existing in base
+            ):
+                continue
+            rescue.append(
+                {
+                    "mask": mask,
+                    "score": max(confirming),
+                    "source": "rescue",
+                }
+            )
+        deduplicated = []
+        for candidate in sorted(rescue, key=lambda value: -value["score"]):
+            if all(
+                recovery_core.mask_iou(candidate["mask"], previous["mask"])
+                < CONFIG["same_view_duplicate_iou"]
+                for previous in deduplicated
+            ):
+                deduplicated.append(candidate)
+        rescue = [{**candidate, "score": 0.99, "source": "rescue"} for candidate in deduplicated]
+    include_crops = policy in {
+        "crop",
+        "confirmed_crop",
+        "rescue_plus_crop",
+        "rescue_plus_confirmed_crop",
+    }
+    additions = rescue + (crops if include_crops else [])
+    return matched_core.additive_reconcile(
+        base_masks,
+        additions,
+        minimum_area=64,
+        duplicate_iou=CONFIG["same_view_duplicate_iou"],
+        base_duplicate_iou=CONFIG["cross_scale_confirmation_iou"],
+    )
 
 
 def baseline_masks(rows):
     candidates = []
     for row in rows:
-        detector_score = float(row["detector_score"])
-        score = (
-            detector_score
-            if row.get("long_object_path", False)
-            else detector_score * math.sqrt(max(float(row["refiner_score"]), 0.0))
-        )
+        score = baseline_candidate_score(row)
         if score >= 0.3 and int(row["refined_area"]) >= 64:
             candidates.append((score, metric_core.decode(row["refined"])))
     masks = [mask for _, mask in candidates]
@@ -382,21 +515,41 @@ def evaluate(cache, baseline_cache, indices):
     }
     grid = []
     configurations = []
-    for mode in ("whole", "multiscale"):
+    policies = (
+        "control",
+        "rescue",
+        "crop",
+        "confirmed_crop",
+        "rescue_plus_crop",
+        "rescue_plus_confirmed_crop",
+    )
+    for policy in policies:
         for threshold in CONFIG["thresholds"]:
             stats = {
-                name: metric_core.score(truth_cache[name], assemble(cache[name], threshold, mode))
+                name: metric_core.score(
+                    truth_cache[name],
+                    baseline_masks(baseline_cache[name])
+                    if policy == "control"
+                    else assemble(cache[name], baseline_cache[name], threshold, policy),
+                )
                 for name in calibration
             }
             metrics = aggregate(stats, calibration)
-            row = {"mode": mode, "threshold": threshold, **metrics}
+            row = {"policy": policy, "threshold": threshold, **metrics}
             grid.append(row)
             configurations.append(row)
     selected = dict(matched_core.select_configuration(configurations))
     selected_stats = {
         name: metric_core.score(
             truth_cache[name],
-            assemble(cache[name], selected["threshold"], selected["mode"]),
+            baseline_masks(baseline_cache[name])
+            if selected["policy"] == "control"
+            else assemble(
+                cache[name],
+                baseline_cache[name],
+                selected["threshold"],
+                selected["policy"],
+            ),
         )
         for name in CONFIG["validation_names"]
     }
@@ -438,9 +591,11 @@ def main() -> None:
         )
         yaml, data_counts = materialize_training_data(paths, indices, selected_ids)
         training_started = time.monotonic()
-        detector = train_detector(yaml, initial)
+        detector, training_stats = train_detector(yaml, initial)
         training_seconds = time.monotonic() - training_started
-        candidates, inference_seconds = infer_validation(paths, detector, refiner, indices)
+        candidates, inference_seconds, inference_stats = infer_validation(
+            paths, detector, refiner, indices
+        )
         baseline_cache = json.loads(baseline_path.read_text())
         if set(baseline_cache) != set(CONFIG["validation_names"]):
             raise ValueError("Baseline membership mismatch")
@@ -453,6 +608,8 @@ def main() -> None:
             "membership_sha256": CONFIG["membership_sha256"],
             "evidence_scope": "matched-scale historical validation pilot",
             "data_counts": data_counts,
+            "training_stats": training_stats,
+            "inference_stats": inference_stats,
             "training_seconds": training_seconds,
             "inference_seconds": inference_seconds,
             "elapsed_seconds": time.monotonic() - STARTED,

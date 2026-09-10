@@ -59,3 +59,13 @@ def test_remote_releases_training_model_before_checkpoint_reload() -> None:
     reload_model = source.index("reloaded = model_module.PQSetFormer")
     assert release < reload_model
     assert source.index("torch.cuda.empty_cache()", release) < reload_model
+
+
+def test_remote_amp_overflow_backs_off_and_still_requires_five_updates() -> None:
+    source = (HERE / "remote.py").read_text()
+
+    assert "AMP_INITIAL_SCALE = 16.0" in source
+    assert '"amp_overflow"' in source
+    assert "if amp_overflows > MAX_AMP_OVERFLOWS" in source
+    assert "if optimizer_step == target_steps:" in source
+    assert '"attempted_microbatches"' in source

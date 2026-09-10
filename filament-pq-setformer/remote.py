@@ -24,6 +24,8 @@ from torch.utils.data import DataLoader
 
 WORK = Path("/kaggle/working/pq-setformer")
 TASK = json.loads(Path("/kaggle/working/task-config.json").read_text())
+AMP_INITIAL_SCALE = 16.0
+MAX_AMP_OVERFLOWS = 4
 
 
 def write_json(path: Path, value) -> None:
@@ -153,26 +155,31 @@ def train_smoke(
         model_module.optimizer_groups(network, experiment),
         weight_decay=experiment.training.weight_decay,
     )
-    total_steps = len(loader) // experiment.training.accumulation
+    if experiment.training.smoke_microbatches % experiment.training.accumulation:
+        raise ValueError("Smoke microbatches must divide exactly into optimizer steps")
+    target_steps = experiment.training.smoke_microbatches // experiment.training.accumulation
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda step: cosine_multiplier(step, total_steps, experiment.training.warmup_steps),
+        lambda step: cosine_multiplier(step, target_steps, experiment.training.warmup_steps),
     )
     scaler = torch.amp.GradScaler(
         "cuda",
         enabled=experiment.training.amp,
-        init_scale=2**12,
+        init_scale=AMP_INITIAL_SCALE,
         growth_interval=1000,
     )
     optimizer.zero_grad(set_to_none=True)
     started = time.monotonic()
     optimizer_step = 0
+    amp_overflows = 0
+    attempted_microbatches = 0
     minimum_loss = math.inf
     maximum_loss = -math.inf
     last_loss = None
     last_record = None
     optimizer_started = time.monotonic()
     for microbatch, batch in enumerate(loader, 1):
+        attempted_microbatches = microbatch
         last_record = {
             "filename": batch[0]["filename"],
             "annotation_record": batch[0]["annotation_record"],
@@ -198,7 +205,27 @@ def train_smoke(
         scaler.unscale_(optimizer)
         grad_norm = clip_grad_norm_(network.parameters(), experiment.training.gradient_clip)
         if not torch.isfinite(grad_norm):
-            raise FloatingPointError(f"Non-finite gradient at {last_record}")
+            old_scale = scaler.get_scale()
+            scaler.step(optimizer)
+            scaler.update()
+            new_scale = scaler.get_scale()
+            optimizer.zero_grad(set_to_none=True)
+            amp_overflows += 1
+            logger.log(
+                "amp_overflow",
+                step=optimizer_step,
+                **{
+                    "amp/old_scale": float(old_scale),
+                    "amp/new_scale": float(new_scale),
+                    "amp/skipped_step": 1,
+                    "microbatch": microbatch,
+                },
+            )
+            if new_scale >= old_scale:
+                raise FloatingPointError("GradScaler did not back off after non-finite gradients")
+            if amp_overflows > MAX_AMP_OVERFLOWS:
+                raise FloatingPointError(f"Repeated AMP overflows at {last_record}")
+            continue
         old_scale = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
@@ -242,13 +269,17 @@ def train_smoke(
             },
         )
         optimizer_started = time.monotonic()
+        if optimizer_step == target_steps:
+            break
 
-    if optimizer_step != total_steps or last_loss is None:
+    if optimizer_step != target_steps or last_loss is None:
         raise RuntimeError("Training did not execute the declared optimizer-step count")
     return (
         {
-            "microbatches": len(loader),
+            "microbatches": experiment.training.smoke_microbatches,
+            "attempted_microbatches": attempted_microbatches,
             "optimizer_steps": optimizer_step,
+            "amp_overflows": amp_overflows,
             "minimum_loss": minimum_loss,
             "maximum_loss": maximum_loss,
             "last_loss": last_loss,
@@ -353,7 +384,8 @@ def main() -> None:
             index=annotation_index,
             image_directory=training_root / "train_images",
             filenames=TASK["training_names"],
-            presentations=experiment.training.smoke_microbatches,
+            presentations=experiment.training.smoke_microbatches
+            + experiment.training.accumulation * MAX_AMP_OVERFLOWS,
             input_size=experiment.model.input_size,
             seed=experiment.training.seed,
         )

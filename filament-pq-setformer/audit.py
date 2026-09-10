@@ -75,6 +75,17 @@ def audit_smoke(
             issues.append(f"training {name} is missing or non-finite")
     if training.get("microbatches") != 20 or training.get("optimizer_steps") != 5:
         issues.append("training did not complete the frozen 20/5 smoke schedule")
+    attempted = training.get("attempted_microbatches")
+    overflows = training.get("amp_overflows")
+    if (
+        not isinstance(attempted, int)
+        or isinstance(attempted, bool)
+        or not isinstance(overflows, int)
+        or isinstance(overflows, bool)
+        or not 0 <= overflows <= 4
+        or attempted != 20 + 4 * overflows
+    ):
+        issues.append("AMP overflow accounting is invalid")
     peak_memory = training.get("peak_reserved_gb")
     memory_limit = report.get("memory_limit_gb")
     if not _finite(peak_memory) or not _finite(memory_limit) or peak_memory > memory_limit:

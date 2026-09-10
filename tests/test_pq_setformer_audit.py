@@ -77,7 +77,9 @@ def valid_artifacts(tmp_path: Path):
         },
         "training": {
             "microbatches": 20,
+            "attempted_microbatches": 20,
             "optimizer_steps": 5,
+            "amp_overflows": 0,
             "last_loss": 0.2,
             "minimum_loss": 0.1,
             "maximum_loss": 1.0,
@@ -133,6 +135,16 @@ def test_audit_rejects_missing_wandb_bundle_or_excess_memory(tmp_path) -> None:
 
     assert "offline W&B bundle is missing or ambiguous" in issues
     assert "training exceeded the declared P100 memory limit" in issues
+
+
+def test_audit_rejects_excessive_or_unaccounted_amp_overflows(tmp_path) -> None:
+    report, checkpoint, candidates, logs = valid_artifacts(tmp_path)
+    report["training"]["attempted_microbatches"] = 40
+    report["training"]["amp_overflows"] = 5
+
+    issues = audit.audit_smoke(report, checkpoint, candidates, logs)
+
+    assert "AMP overflow accounting is invalid" in issues
 
 
 def test_audit_rejects_candidate_schema_or_count_mismatch(tmp_path) -> None:

@@ -106,3 +106,10 @@ def test_ambiguous_push_or_fetch_failure_preserves_remote_state(tmp_path, status
     saved = json.loads(record_path.read_text())
     assert saved["status"] == status
     assert saved["controller_error"] == "network timeout"
+
+
+def test_push_parser_rejects_cli_error_even_when_process_exits_zero() -> None:
+    output = "Kernel push error: Maximum weekly GPU quota of 30.00 hours reached."
+
+    with pytest.raises(RuntimeError, match="Maximum weekly GPU quota"):
+        runner.kernel_from_push_output(output)

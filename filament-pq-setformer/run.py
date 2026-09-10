@@ -39,6 +39,10 @@ SOURCE_PATHS = (
 BUNDLE_PATHS = (*SOURCE_PATHS, "sfsc/__init__.py", "sfsc/evaluation.py")
 
 
+class PushRejected(RuntimeError):
+    """Kaggle explicitly rejected a push, even if its CLI exited successfully."""
+
+
 def digest_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -349,6 +353,16 @@ def _poll_status(record: dict[str, Any], record_path: Path) -> None:
         time.sleep(45)
 
 
+def kernel_from_push_output(output: str) -> str:
+    errors = re.findall(r"Kernel push error:\s*([^\r\n]+)", output, flags=re.IGNORECASE)
+    if errors:
+        raise PushRejected(errors[-1].strip())
+    urls = re.findall(r"https://www\.kaggle\.com/code/([\w-]+/[\w-]+)", output)
+    if not urls:
+        raise RuntimeError("Push result did not contain a Kaggle kernel URL")
+    return urls[-1]
+
+
 def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
     """Submit at most once, then monitor and verify the completed smoke run."""
     record_path = Path(record_path)
@@ -369,11 +383,8 @@ def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
             timeout=600,
         )
         (directory / "push.log").write_text(output)
-        urls = re.findall(r"https://www\.kaggle\.com/code/([\w-]+/[\w-]+)", output)
-        if not urls:
-            raise RuntimeError("Push result did not contain a Kaggle kernel URL")
         record.update(
-            kernel=urls[-1],
+            kernel=kernel_from_push_output(output),
             status="running",
             started_at=datetime.now(UTC).isoformat(),
         )
@@ -395,7 +406,13 @@ def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
 
 def record_controller_failure(record: dict[str, Any], record_path: Path, error: Exception) -> None:
     """Persist failures without turning an ambiguous remote success into a rerunnable job."""
-    if record.get("status") in {"pushing", "remote_complete_fetch_pending"}:
+    if isinstance(error, PushRejected):
+        record.update(
+            status="failed",
+            error=str(error),
+            stopped_at=datetime.now(UTC).isoformat(),
+        )
+    elif record.get("status") in {"pushing", "remote_complete_fetch_pending"}:
         record.update(
             controller_error=str(error),
             controller_stopped_at=datetime.now(UTC).isoformat(),

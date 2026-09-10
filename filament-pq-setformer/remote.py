@@ -51,10 +51,6 @@ def verify_source_snapshot() -> None:
         raise ValueError("Extracted vendor lock hash mismatch")
 
 
-def discover_dataset() -> Path:
-    return data.discover_dataset_root(Path("/kaggle/input"))
-
-
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -326,13 +322,19 @@ def main() -> None:
         raise ValueError("Experiment config hash mismatch")
     seed_everything(experiment.training.seed)
     gpu = gpu_preflight()
-    training_root = discover_dataset()
+    training_root = data.discover_dataset_root(Path("/kaggle/input"))
+    observed_dataset = {
+        "source": TASK["dataset"]["source"],
+        **data.training_dataset_snapshot(training_root),
+    }
+    if observed_dataset != TASK["dataset"]:
+        raise ValueError("Private training dataset snapshot mismatch")
     annotation_path = training_root / "MAGFiLO_1.0_Annotations_kaggle2026_train.json"
     annotation_index = data.load_annotation_index(
         annotation_path, set(TASK["training_names"] + TASK["inference_names"])
     )
-    if annotation_index.sha256 != TASK["annotation_sha256"]:
-        raise ValueError("Private dataset annotation hash mismatch")
+    if annotation_index.sha256 != TASK["dataset"]["annotation_sha256"]:
+        raise ValueError("Private dataset annotation index hash mismatch")
     if annotation_index.maximum_instances > experiment.model.audited_max_instances:
         raise ValueError("Runtime annotation count exceeds the frozen query-capacity audit")
 
@@ -393,7 +395,7 @@ def main() -> None:
                 "vendor_lock_sha256": TASK["vendor_lock_sha256"],
                 "git_sha": TASK["git_sha"],
                 "membership_sha256": TASK["membership_sha256"],
-                "dataset_source": TASK["dataset_source"],
+                "dataset": TASK["dataset"],
                 "training": training,
             },
             checkpoint,
@@ -427,7 +429,7 @@ def main() -> None:
             "git_sha": TASK["git_sha"],
             "membership_sha256": TASK["membership_sha256"],
             "config_sha256": experiment.sha256,
-            "dataset_source": TASK["dataset_source"],
+            "dataset": TASK["dataset"],
             "annotation_sha256": annotation_index.sha256,
             "gpu": gpu,
             "training": training,

@@ -33,21 +33,17 @@ uv run python filament-pq-setformer/run.py status
 uv run python filament-pq-setformer/run.py run
 ```
 
-To prepare the kernel under a different account that has been granted access to
-the private dataset, freeze that username explicitly and use the same credential
-context for `run`:
-
-```bash
-uv run python filament-pq-setformer/run.py prepare --owner KAGGLE_USERNAME
-uv run python filament-pq-setformer/run.py run
-```
-
 `prepare` freezes the exact source, configuration, and image membership under
 `outputs/pq-setformer-<timestamp>/` and writes the active record to
 `reports/pq_setformer_run.json`. `run` packages that snapshot, installs the
 pinned CUDA-compatible runtime, launches one private internet-enabled P100
 kernel, monitors it, downloads its outputs, and audits them. A second active run
 is refused.
+
+Before pushing, the controller verifies that the active Kaggle CLI identity is
+exactly `hariohmhemantbhatt`; primary-account or ambiguous credentials are
+rejected. It also content-hashes all private training images and annotations and
+requires the remote mount to reproduce the same snapshot.
 
 The controller records push intent before calling Kaggle. If upload completion
 is ambiguous, it remains in `pushing`; inspect the Kaggle account instead of

@@ -23,6 +23,23 @@ def test_discover_dataset_root_accepts_private_train_only_mount(tmp_path) -> Non
     assert data.discover_dataset_root(tmp_path) == root.resolve()
 
 
+def test_training_dataset_snapshot_detects_same_size_image_replacement(tmp_path) -> None:
+    (tmp_path / "train_images").mkdir()
+    annotation = tmp_path / "MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    image = tmp_path / "train_images/image.jpeg"
+    annotation.write_bytes(b"annotations")
+    image.write_bytes(b"first-image")
+
+    first = data.training_dataset_snapshot(tmp_path)
+    image.write_bytes(b"other-image")
+    second = data.training_dataset_snapshot(tmp_path)
+
+    assert first["files"] == second["files"] == 2
+    assert first["bytes"] == second["bytes"] == 22
+    assert first["annotation_sha256"] == second["annotation_sha256"]
+    assert first["sha256"] != second["sha256"]
+
+
 def test_real_index_keeps_complete_records_and_audits_query_capacity() -> None:
     annotation = ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
     index = data.load_annotation_index(annotation)

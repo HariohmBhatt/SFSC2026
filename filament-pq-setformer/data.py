@@ -35,6 +35,31 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def training_dataset_snapshot(training_root: Path) -> dict[str, int | str]:
+    """Content-address one annotation file and every private training image."""
+    training_root = Path(training_root)
+    annotation = training_root / "MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    images = sorted(path for path in (training_root / "train_images").rglob("*") if path.is_file())
+    files = [annotation, *images]
+    if not annotation.is_file() or not images:
+        raise ValueError("SFSC private training dataset is incomplete")
+    entries = [
+        {
+            "path": path.relative_to(training_root).as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        }
+        for path in files
+    ]
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "annotation_sha256": entries[0]["sha256"],
+        "files": len(entries),
+        "bytes": sum(int(entry["bytes"]) for entry in entries),
+    }
+
+
 def _seed(*values: object) -> int:
     text = ":".join(map(str, values))
     return int(hashlib.sha256(text.encode()).hexdigest()[:16], 16)

@@ -6,6 +6,7 @@ import argparse
 import ast
 import base64
 import fcntl
+import functools
 import hashlib
 import json
 import re
@@ -19,6 +20,7 @@ from typing import Any
 
 import audit
 import core
+import data
 from config import ExperimentConfig, ModelConfig
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,18 +118,32 @@ def _assert_live_source_fresh(record: dict[str, Any]) -> None:
         raise ValueError("Prepared source is stale; prepare a new immutable run")
 
 
+@functools.cache
+def local_dataset_snapshot() -> dict[str, int | str]:
+    return data.training_dataset_snapshot(ROOT / "SFSCDataset/train")
+
+
+def assert_training_account(record: dict[str, Any], kaggle_config: str) -> None:
+    """Require the isolated Kaggle2 identity before any remote mutation."""
+    match = re.search(r"(?m)^- username:\s*([^\s]+)\s*$", kaggle_config)
+    kernel_owner = record["kernel"].split("/", 1)[0]
+    dataset_owner = record["dataset"]["source"].split("/", 1)[0]
+    if match is None or match.group(1) != OWNER or kernel_owner != OWNER or dataset_owner != OWNER:
+        actual = match.group(1) if match is not None else "unknown"
+        raise RuntimeError(
+            f"PQ training requires Kaggle account {OWNER}; configured account is {actual}"
+        )
+
+
 def prepare(
     *,
     record_path: Path = RECORD,
     outputs_root: Path | None = None,
     run_id: str | None = None,
-    owner: str = OWNER,
 ) -> dict[str, Any]:
     """Freeze the E1 smoke source, configuration, and exact image membership."""
     record_path = Path(record_path)
     outputs_root = Path(outputs_root) if outputs_root is not None else ROOT / "outputs"
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", owner) is None:
-        raise ValueError(f"Invalid Kaggle owner {owner!r}")
     if record_path.exists():
         previous = json.loads(record_path.read_text())
         if previous.get("status") not in TERMINAL_STATUSES:
@@ -172,7 +188,7 @@ def prepare(
         "run_id": run_id,
         "created_at": datetime.now(UTC).isoformat(),
         "directory": str(directory.resolve()),
-        "kernel": f"{owner}/sfsc-pq-setformer-{run_id}",
+        "kernel": f"{OWNER}/sfsc-pq-setformer-{run_id}",
         "source_sha256": source_digest(source),
         "source_files": list(source),
         "vendor_lock_sha256": digest_bytes(source["vendor-lock.json"].encode()),
@@ -184,10 +200,7 @@ def prepare(
         "inference_names": inference_names,
         "split": split.to_dict(),
         "automatic_submission": False,
-        "dataset_source": PRIVATE_DATASET_SOURCE,
-        "annotation_sha256": digest(
-            ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
-        ),
+        "dataset": {"source": PRIVATE_DATASET_SOURCE, **local_dataset_snapshot()},
     }
     write_json(directory / "manifest.json", record)
     write_json(record_path, record)
@@ -263,8 +276,7 @@ def build_kernel(record: dict[str, Any]) -> Path:
             "training_names",
             "inference_names",
             "split",
-            "dataset_source",
-            "annotation_sha256",
+            "dataset",
         )
     }
     payload = {**frozen, "task-config.json": json.dumps(task, sort_keys=True)}
@@ -282,7 +294,7 @@ def build_kernel(record: dict[str, Any]) -> Path:
         "enable_gpu": True,
         "enable_internet": True,
         "machine_shape": "NvidiaTeslaP100",
-        "dataset_sources": [record["dataset_source"]],
+        "dataset_sources": [record["dataset"]["source"]],
         "competition_sources": [],
         "kernel_sources": [],
         "model_sources": [],
@@ -329,8 +341,7 @@ def fetch_and_verify(record: dict[str, Any]) -> dict[str, Any]:
             "git_sha",
             "membership_sha256",
             "config_sha256",
-            "dataset_source",
-            "annotation_sha256",
+            "dataset",
         )
     ):
         raise ValueError("Smoke report lineage mismatch")
@@ -386,6 +397,7 @@ def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
     """Submit at most once, then monitor and verify the completed smoke run."""
     record_path = Path(record_path)
     if record["status"] == "prepared":
+        assert_training_account(record, _cli("config", "view", timeout=30))
         _assert_live_source_fresh(record)
         directory = build_kernel(record)
         record.update(status="pushing", push_started_at=datetime.now(UTC).isoformat())
@@ -448,14 +460,9 @@ def record_controller_failure(record: dict[str, Any], record_path: Path, error: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "run", "status"))
-    parser.add_argument(
-        "--owner",
-        default=OWNER,
-        help="Kaggle username that will own a newly prepared kernel",
-    )
     arguments = parser.parse_args()
     if arguments.command == "prepare":
-        print(json.dumps(prepare(owner=arguments.owner), indent=2))
+        print(json.dumps(prepare(), indent=2))
         return
     if arguments.command == "status":
         if not RECORD.is_file():

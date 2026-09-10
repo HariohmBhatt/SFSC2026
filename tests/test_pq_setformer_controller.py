@@ -21,7 +21,7 @@ def load_runner():
         return runner
     finally:
         sys.path.remove(str(HERE))
-        for name in ("audit", "config", "core"):
+        for name in ("audit", "config", "core", "data"):
             module = sys.modules.get(name)
             if module is not None and Path(module.__file__).resolve().parent == HERE:
                 sys.modules.pop(name)
@@ -41,14 +41,15 @@ def test_prepare_freezes_complete_source_config_and_membership(tmp_path) -> None
     assert record["status"] == "prepared"
     assert record["automatic_submission"] is False
     assert record["kernel"] == "hariohmhemantbhatt/sfsc-pq-setformer-20260910-120000"
-    assert record["dataset_source"] == "hariohmhemantbhatt/sfsc2026-private-data"
+    assert record["dataset"]["source"] == "hariohmhemantbhatt/sfsc2026-private-data"
+    assert record["dataset"]["files"] == 708
+    assert record["dataset"]["bytes"] == 607_987_717
+    assert len(record["dataset"]["sha256"]) == 64
     assert record["experiment"]["model"]["input_size"] == 1024
     assert len(record["training_names"]) == 289
     assert len(record["inference_names"]) == 2
     assert len(record["source_sha256"]) == 64
-    assert record["annotation_sha256"] == runner.digest(
-        ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
-    )
+    assert len(record["dataset"]["annotation_sha256"]) == 64
     assert len(record["membership_sha256"]) == 64
     assert len(record["vendor_lock_sha256"]) == 64
     assert len(record["git_sha"]) == 40
@@ -59,24 +60,16 @@ def test_prepare_freezes_complete_source_config_and_membership(tmp_path) -> None
     }
 
 
-def test_prepare_freezes_selected_kaggle_owner(tmp_path) -> None:
+def test_training_account_guard_rejects_primary_kaggle_credentials(tmp_path) -> None:
     record = runner.prepare(
         record_path=tmp_path / "record.json",
         outputs_root=tmp_path / "outputs",
         run_id="20260910-120003",
-        owner="second-account",
     )
 
-    assert record["kernel"] == "second-account/sfsc-pq-setformer-20260910-120003"
-
-
-def test_prepare_rejects_invalid_kaggle_owner(tmp_path) -> None:
-    with pytest.raises(ValueError, match="Invalid Kaggle owner"):
-        runner.prepare(
-            record_path=tmp_path / "record.json",
-            outputs_root=tmp_path / "outputs",
-            owner="owner/kernel",
-        )
+    runner.assert_training_account(record, "- username: hariohmhemantbhatt\n")
+    with pytest.raises(RuntimeError, match="requires Kaggle account hariohmhemantbhatt"):
+        runner.assert_training_account(record, "- username: hariohmbhatt\n")
 
 
 def test_kernel_bootstrap_pins_runtime_commits_sm60_and_wandb(tmp_path) -> None:

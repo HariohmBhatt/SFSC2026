@@ -33,6 +33,14 @@ uv run python filament-pq-setformer/run.py status
 uv run python filament-pq-setformer/run.py run
 ```
 
+After a successful 1024 smoke, prepare the measured-safe resolution preflight
+explicitly, for example:
+
+```bash
+uv run python filament-pq-setformer/run.py prepare --input-size 1216
+uv run python filament-pq-setformer/run.py run
+```
+
 `prepare` freezes the exact source, configuration, and image membership under
 `outputs/pq-setformer-<timestamp>/` and writes the active record to
 `reports/pq_setformer_run.json`. `run` packages that snapshot, installs the

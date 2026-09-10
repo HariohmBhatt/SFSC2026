@@ -140,6 +140,7 @@ def prepare(
     record_path: Path = RECORD,
     outputs_root: Path | None = None,
     run_id: str | None = None,
+    input_size: int = 1024,
 ) -> dict[str, Any]:
     """Freeze the E1 smoke source, configuration, and exact image membership."""
     record_path = Path(record_path)
@@ -160,7 +161,7 @@ def prepare(
     if tuple(map(len, split.members.values())) != (289, 69, 34, 87, 16):
         raise ValueError("Blocked pilot-1 membership drifted")
 
-    experiment = ExperimentConfig(model=replace(ModelConfig(), input_size=1024))
+    experiment = ExperimentConfig(model=replace(ModelConfig(), input_size=input_size))
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     directory = outputs_root / f"pq-setformer-{run_id}"
     directory.mkdir(parents=True, exist_ok=False)
@@ -184,7 +185,7 @@ def prepare(
     }
     record = {
         "status": "prepared",
-        "stage": "E1-smoke",
+        "stage": f"E1-smoke-{input_size}",
         "run_id": run_id,
         "created_at": datetime.now(UTC).isoformat(),
         "directory": str(directory.resolve()),
@@ -460,9 +461,16 @@ def record_controller_failure(record: dict[str, Any], record_path: Path, error: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "run", "status"))
+    parser.add_argument(
+        "--input-size",
+        type=int,
+        choices=(1024, 1152, 1216, 1280),
+        default=1024,
+        help="Frozen square input size for a newly prepared preflight",
+    )
     arguments = parser.parse_args()
     if arguments.command == "prepare":
-        print(json.dumps(prepare(), indent=2))
+        print(json.dumps(prepare(input_size=arguments.input_size), indent=2))
         return
     if arguments.command == "status":
         if not RECORD.is_file():

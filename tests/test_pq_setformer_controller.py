@@ -72,6 +72,18 @@ def test_training_account_guard_rejects_primary_kaggle_credentials(tmp_path) -> 
         runner.assert_training_account(record, "- username: hariohmbhatt\n")
 
 
+def test_prepare_freezes_selected_preflight_input_size(tmp_path) -> None:
+    record = runner.prepare(
+        record_path=tmp_path / "record.json",
+        outputs_root=tmp_path / "outputs",
+        run_id="20260910-120005",
+        input_size=1216,
+    )
+
+    assert record["stage"] == "E1-smoke-1216"
+    assert record["experiment"]["model"]["input_size"] == 1216
+
+
 def test_kernel_bootstrap_pins_runtime_commits_sm60_and_wandb(tmp_path) -> None:
     record = runner.prepare(
         record_path=tmp_path / "record.json",

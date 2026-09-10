@@ -1,8 +1,8 @@
 # PQ-SetFormer operator guide
 
-The code currently prepares and executes the mandatory E1 Kaggle P100 smoke.
-Local CPU contracts are complete; the real CUDA/MaskDINO build and training gate
-still require a remote run.
+The code prepares and executes the mandatory E1 Kaggle P100 smoke. The private
+data, CUDA/MaskDINO build, AMP, memory, checkpoint, inference, and artifact gates
+passed at 1024 pixels in run `20260910-161954`.
 
 Training runs under Kaggle2 (`hariohmhemantbhatt`) and mounts only the private
 `hariohmhemantbhatt/sfsc2026-private-data` dataset. The kernel has no competition

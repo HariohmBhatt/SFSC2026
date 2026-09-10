@@ -1,6 +1,6 @@
 # PQ-SetFormer E1 vertical tracer
 
-Status: **implemented locally; P100 smoke evidence pending**.
+Status: **private-data P100 smoke passed on 2026-09-10**.
 
 This package is the first executable increment of the broader
 [implementation and training plan](IMPLEMENTATION_PLAN.md). It is deliberately
@@ -73,8 +73,16 @@ submits a competition CSV.
 
 ## Promotion boundary
 
-Once the smoke gate passes, its measured memory and step time determine whether
-1280/64 is safe and whether AMP is retained. Only then should the staged E1
-pilot, isolated E2-E6 additions, second blocked replication, three-fold OOF
-calibration, fresh 601-image fit, and competition inference be implemented and
-run in the order defined by the full plan.
+Run `20260910-161954` passed as `smoke_complete` on a Tesla P100 with PyTorch
+2.7.1/cu126. Twenty 1024-pixel microbatches produced five optimizer updates in
+28.34 seconds with no AMP overflow. Peak allocated/reserved memory was
+9.33/9.45 GB. Checkpoint reload, 128 raw candidates over two images, offline
+W&B, JSONL parity, and artifact hashes passed local audit. The training input
+was the private `hariohmhemantbhatt/sfsc2026-private-data` snapshot (708 files,
+607,987,717 bytes, digest `e9ef61ae423e`). No competition source was attached.
+
+Naive area scaling projects 1280-pixel reserved memory to about 14.77 GB, above
+the 14.5 GB gate. The next measured target is therefore 1216/64; only after that
+preflight should the staged E1 pilot, isolated E2-E6 additions, second blocked
+replication, three-fold OOF calibration, fresh 601-image fit, and primary-account
+competition inference run in the order defined by the full plan.

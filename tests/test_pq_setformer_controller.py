@@ -40,10 +40,15 @@ def test_prepare_freezes_complete_source_config_and_membership(tmp_path) -> None
 
     assert record["status"] == "prepared"
     assert record["automatic_submission"] is False
+    assert record["kernel"] == "hariohmhemantbhatt/sfsc-pq-setformer-20260910-120000"
+    assert record["dataset_source"] == "hariohmhemantbhatt/sfsc2026-private-data"
     assert record["experiment"]["model"]["input_size"] == 1024
     assert len(record["training_names"]) == 289
     assert len(record["inference_names"]) == 2
     assert len(record["source_sha256"]) == 64
+    assert record["annotation_sha256"] == runner.digest(
+        ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    )
     assert len(record["membership_sha256"]) == 64
     assert len(record["vendor_lock_sha256"]) == 64
     assert len(record["git_sha"]) == 40
@@ -91,9 +96,10 @@ def test_kernel_bootstrap_pins_runtime_commits_sm60_and_wandb(tmp_path) -> None:
     assert "wandb==0.30.0" in source
     assert "timm==0.9.16" in source
     assert "--force-reinstall" in source
-    assert json.loads((kernel / "kernel-metadata.json").read_text())["machine_shape"] == (
-        "NvidiaTeslaP100"
-    )
+    metadata = json.loads((kernel / "kernel-metadata.json").read_text())
+    assert metadata["machine_shape"] == "NvidiaTeslaP100"
+    assert metadata["dataset_sources"] == ["hariohmhemantbhatt/sfsc2026-private-data"]
+    assert metadata["competition_sources"] == []
 
 
 def test_kernel_bootstrap_patches_maskdino_legacy_torch_dispatch(tmp_path) -> None:
@@ -105,9 +111,10 @@ def test_kernel_bootstrap_patches_maskdino_legacy_torch_dispatch(tmp_path) -> No
 
     source = (runner.build_kernel(record) / "run.py").read_text()
 
-    assert 'dispatch_source.count("value.type()") != 2' in source
-    assert 'dispatch_source.replace("value.type()", "value.scalar_type()")' in source
-    assert source.index('dispatch_source.replace("value.type()"') < source.index(
+    assert 'legacy_dispatch = "AT_DISPATCH_FLOATING_TYPES(value.type(),"' in source
+    assert "dispatch_source.count(legacy_dispatch) != 2" in source
+    assert 'legacy_dispatch.replace("value.type()", "value.scalar_type()")' in source
+    assert source.index("dispatch_source.replace(legacy_dispatch") < source.index(
         'command("sh", "make.sh", cwd=ops)'
     )
 

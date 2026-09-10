@@ -4,6 +4,11 @@ The code currently prepares and executes the mandatory E1 Kaggle P100 smoke.
 Local CPU contracts are complete; the real CUDA/MaskDINO build and training gate
 still require a remote run.
 
+Training runs under Kaggle2 (`hariohmhemantbhatt`) and mounts only the private
+`hariohmhemantbhatt/sfsc2026-private-data` dataset. The kernel has no competition
+source and cannot submit. Competition inference and submission remain a separate
+primary-account (`hariohmbhatt`) stage.
+
 ## Local verification
 
 From the repository root:
@@ -20,7 +25,7 @@ MaskDINO. Model imports and execution belong to the pinned P100 kernel.
 
 ## Prepare and run the smoke
 
-Authenticate the Kaggle CLI, then run:
+Authenticate the Kaggle CLI as the training account, then run:
 
 ```bash
 uv run python filament-pq-setformer/run.py prepare
@@ -28,8 +33,9 @@ uv run python filament-pq-setformer/run.py status
 uv run python filament-pq-setformer/run.py run
 ```
 
-To prepare the kernel under a different authenticated Kaggle account, freeze
-that username explicitly and use the same credential context for `run`:
+To prepare the kernel under a different account that has been granted access to
+the private dataset, freeze that username explicitly and use the same credential
+context for `run`:
 
 ```bash
 uv run python filament-pq-setformer/run.py prepare --owner KAGGLE_USERNAME

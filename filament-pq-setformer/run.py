@@ -24,7 +24,8 @@ from config import ExperimentConfig, ModelConfig
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 RECORD = ROOT / "reports/pq_setformer_run.json"
-OWNER = "hariohmbhatt"
+OWNER = "hariohmhemantbhatt"
+PRIVATE_DATASET_SOURCE = "hariohmhemantbhatt/sfsc2026-private-data"
 TERMINAL_STATUSES = {"smoke_complete", "failed", "cancelled"}
 SOURCE_PATHS = (
     "config.py",
@@ -183,6 +184,10 @@ def prepare(
         "inference_names": inference_names,
         "split": split.to_dict(),
         "automatic_submission": False,
+        "dataset_source": PRIVATE_DATASET_SOURCE,
+        "annotation_sha256": digest(
+            ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+        ),
     }
     write_json(directory / "manifest.json", record)
     write_json(record_path, record)
@@ -218,9 +223,11 @@ command("git", "checkout", "--quiet", "{maskdino}", cwd=vendor)
 ops = vendor / "maskdino/modeling/pixel_decoder/ops"
 dispatch = ops / "src/cuda/ms_deform_attn_cuda.cu"
 dispatch_source = dispatch.read_text()
-if dispatch_source.count("value.type()") != 2:
+legacy_dispatch = "AT_DISPATCH_FLOATING_TYPES(value.type(),"
+if dispatch_source.count(legacy_dispatch) != 2:
     raise RuntimeError("Pinned MaskDINO dispatch source changed unexpectedly")
-dispatch.write_text(dispatch_source.replace("value.type()", "value.scalar_type()"))
+modern_dispatch = legacy_dispatch.replace("value.type()", "value.scalar_type()")
+dispatch.write_text(dispatch_source.replace(legacy_dispatch, modern_dispatch))
 command("sh", "make.sh", cwd=ops)
 
 payload = json.loads(zlib.decompress(base64.b64decode({payload!r})))
@@ -256,6 +263,8 @@ def build_kernel(record: dict[str, Any]) -> Path:
             "training_names",
             "inference_names",
             "split",
+            "dataset_source",
+            "annotation_sha256",
         )
     }
     payload = {**frozen, "task-config.json": json.dumps(task, sort_keys=True)}
@@ -273,8 +282,8 @@ def build_kernel(record: dict[str, Any]) -> Path:
         "enable_gpu": True,
         "enable_internet": True,
         "machine_shape": "NvidiaTeslaP100",
-        "dataset_sources": [],
-        "competition_sources": ["filament-segmentation-2026"],
+        "dataset_sources": [record["dataset_source"]],
+        "competition_sources": [],
         "kernel_sources": [],
         "model_sources": [],
     }
@@ -320,6 +329,8 @@ def fetch_and_verify(record: dict[str, Any]) -> dict[str, Any]:
             "git_sha",
             "membership_sha256",
             "config_sha256",
+            "dataset_source",
+            "annotation_sha256",
         )
     ):
         raise ValueError("Smoke report lineage mismatch")

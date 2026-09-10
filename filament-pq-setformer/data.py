@@ -15,6 +15,18 @@ from PIL import Image
 from pycocotools import mask as coco_mask
 
 
+def discover_dataset_root(input_root: Path) -> Path:
+    """Locate one complete SFSC training directory under a Kaggle input mount."""
+    filename = "MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    candidates = Path(input_root).glob(f"**/{filename}")
+    roots = {
+        path.parent.resolve() for path in candidates if (path.parent / "train_images").is_dir()
+    }
+    if len(roots) != 1:
+        raise ValueError(f"Expected one SFSC training root, found {len(roots)}")
+    return roots.pop()
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:

@@ -15,6 +15,14 @@ sys.modules[spec.name] = data
 spec.loader.exec_module(data)
 
 
+def test_discover_dataset_root_accepts_private_train_only_mount(tmp_path) -> None:
+    root = tmp_path / "sfsc2026-private-data"
+    (root / "train_images").mkdir(parents=True)
+    (root / "MAGFiLO_1.0_Annotations_kaggle2026_train.json").write_text("{}")
+
+    assert data.discover_dataset_root(tmp_path) == root.resolve()
+
+
 def test_real_index_keeps_complete_records_and_audits_query_capacity() -> None:
     annotation = ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
     index = data.load_annotation_index(annotation)

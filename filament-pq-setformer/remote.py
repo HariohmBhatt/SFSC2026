@@ -52,16 +52,7 @@ def verify_source_snapshot() -> None:
 
 
 def discover_dataset() -> Path:
-    candidates = list(
-        Path("/kaggle/input").glob("**/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json")
-    )
-    roots = {path.parent.parent.resolve() for path in candidates}
-    if len(roots) != 1:
-        raise ValueError(f"Expected one SFSC dataset root, found {len(roots)}")
-    root = roots.pop()
-    if not (root / "train/train_images").is_dir() or not (root / "test/test_images").is_dir():
-        raise ValueError("SFSC dataset root is incomplete")
-    return root
+    return data.discover_dataset_root(Path("/kaggle/input"))
 
 
 def seed_everything(seed: int) -> None:
@@ -335,11 +326,13 @@ def main() -> None:
         raise ValueError("Experiment config hash mismatch")
     seed_everything(experiment.training.seed)
     gpu = gpu_preflight()
-    root = discover_dataset()
-    annotation_path = root / "train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    training_root = discover_dataset()
+    annotation_path = training_root / "MAGFiLO_1.0_Annotations_kaggle2026_train.json"
     annotation_index = data.load_annotation_index(
         annotation_path, set(TASK["training_names"] + TASK["inference_names"])
     )
+    if annotation_index.sha256 != TASK["annotation_sha256"]:
+        raise ValueError("Private dataset annotation hash mismatch")
     if annotation_index.maximum_instances > experiment.model.audited_max_instances:
         raise ValueError("Runtime annotation count exceeds the frozen query-capacity audit")
 
@@ -356,7 +349,7 @@ def main() -> None:
     with experiment_logging.ExperimentLogger.start(logger_context, WORK / "logs") as logger:
         dataset = data.VirtualTrainingDataset(
             index=annotation_index,
-            image_directory=root / "train/train_images",
+            image_directory=training_root / "train_images",
             filenames=TASK["training_names"],
             presentations=experiment.training.smoke_microbatches,
             input_size=experiment.model.input_size,
@@ -400,6 +393,7 @@ def main() -> None:
                 "vendor_lock_sha256": TASK["vendor_lock_sha256"],
                 "git_sha": TASK["git_sha"],
                 "membership_sha256": TASK["membership_sha256"],
+                "dataset_source": TASK["dataset_source"],
                 "training": training,
             },
             checkpoint,
@@ -418,7 +412,7 @@ def main() -> None:
         cache, metrics = infer_smoke(
             reloaded,
             annotation_index,
-            root / "train/train_images",
+            training_root / "train_images",
             TASK["inference_names"],
             experiment,
         )
@@ -433,6 +427,7 @@ def main() -> None:
             "git_sha": TASK["git_sha"],
             "membership_sha256": TASK["membership_sha256"],
             "config_sha256": experiment.sha256,
+            "dataset_source": TASK["dataset_source"],
             "annotation_sha256": annotation_index.sha256,
             "gpu": gpu,
             "training": training,

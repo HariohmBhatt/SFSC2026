@@ -81,8 +81,10 @@ wave. Truth-selected candidate recall 0.836 is not attainable PQ because it
 ignores conflicts and FP cost. See [error audit](reports/proposal_error_audit.md).
 
 1. Finish matched-scale training while freezing the 0.38 champion. If it fails,
-   test a P100-sized **query instance segmenter** on native crops with Hungarian
-   matching and foreground/boundary/low-weight centerline supervision.
+   test a P100-sized **query instance segmenter** at the measured-safe full-frame
+   scale with Hungarian matching and foreground/boundary/low-weight centerline
+   supervision; see the complete
+   [PQ-SetFormer-P100 implementation and training plan](filament-pq-setformer/IMPLEMENTATION_PLAN.md).
 2. Train refiners on excluded real detector errors—partial masks, duplicates,
    false proposals, annotator disagreement—and retain seed/global/native choices.
 3. Learn separate presence and expected matched-IoU scores on excluded data;

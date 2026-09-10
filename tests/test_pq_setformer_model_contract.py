@@ -1,0 +1,61 @@
+"""Static contract tests for Kaggle-only model and training code."""
+
+import ast
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+HERE = ROOT / "filament-pq-setformer"
+
+
+def definitions(path: Path):
+    tree = ast.parse(path.read_text(), filename=str(path))
+    functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+    classes = {
+        node.name: {
+            child.name
+            for child in node.body
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+    return functions, classes
+
+
+def test_model_exposes_one_small_train_and_predict_interface() -> None:
+    functions, classes = definitions(HERE / "model.py")
+
+    assert {"build_maskdino_config", "optimizer_groups", "finite_parameters"} <= functions
+    assert {"train_batch", "predict"} <= classes["PQSetFormer"]
+
+
+def test_model_keeps_device_selection_outside_the_module() -> None:
+    source = (HERE / "model.py").read_text()
+
+    assert ".cuda(" not in source
+    assert "torch.cuda.set_device" not in source
+    assert "NUM_OBJECT_QUERIES" in source
+    assert "NUM_CLASSES = 1" in source
+    assert 'META_ARCHITECTURE = "MaskDINO"' in source
+
+
+def test_remote_training_uses_safe_amp_accumulation_and_gradient_clipping() -> None:
+    source = (HERE / "remote.py").read_text()
+
+    assert "GradScaler" in source
+    assert ".unscale_(optimizer)" in source
+    assert "clip_grad_norm_" in source
+    assert "finite_parameters" in source
+    assert "optimizer_step" in source
+    assert "ExperimentLogger.start" in source
+    assert "MSDeformAttnFunction.apply" in source
+    assert "custom_op_forward_backward" in source
+
+
+def test_remote_releases_training_model_before_checkpoint_reload() -> None:
+    source = (HERE / "remote.py").read_text()
+
+    release = source.index("del network, optimizer")
+    reload_model = source.index("reloaded = model_module.PQSetFormer")
+    assert release < reload_model
+    assert source.index("torch.cuda.empty_cache()", release) < reload_model

@@ -1,0 +1,440 @@
+"""Freeze, launch, monitor, and verify the PQ-SetFormer P100 smoke run."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import base64
+import fcntl
+import hashlib
+import json
+import re
+import subprocess
+import time
+import zlib
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import audit
+import core
+from config import ExperimentConfig, ModelConfig
+
+ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+RECORD = ROOT / "reports/pq_setformer_run.json"
+OWNER = "hariohmbhatt"
+TERMINAL_STATUSES = {"smoke_complete", "failed", "cancelled"}
+SOURCE_PATHS = (
+    "config.py",
+    "core.py",
+    "data.py",
+    "experiment_logging.py",
+    "model.py",
+    "remote.py",
+    "audit.py",
+    "vendor-lock.json",
+)
+BUNDLE_PATHS = (*SOURCE_PATHS, "sfsc/__init__.py", "sfsc/evaluation.py")
+
+
+def digest_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def canonical_digest(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return digest_bytes(encoded)
+
+
+def write_json(path: Path, value: Any) -> None:
+    """Atomically replace a JSON record."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+def _cli(*args: str, timeout: int = 300) -> str:
+    return subprocess.check_output(
+        ["kaggle", *args], text=True, stderr=subprocess.STDOUT, timeout=timeout
+    )
+
+
+def frozen_split() -> dict[str, list[str]]:
+    """Read the repository's immutable development split without importing legacy code."""
+    path = ROOT / "kaggle/yolo-refiner/train_validation.py"
+    tree = ast.parse(path.read_text())
+    encoded = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "SPLIT_B64" for target in node.targets
+        )
+    )
+    return json.loads(zlib.decompress(base64.b64decode(encoded)))
+
+
+def source_bundle() -> dict[str, str]:
+    """Return every source file needed by the isolated Kaggle runtime."""
+    bundle = {name: (HERE / name).read_text() for name in SOURCE_PATHS}
+    bundle.update(
+        {
+            "sfsc/__init__.py": (ROOT / "src/sfsc/__init__.py").read_text(),
+            "sfsc/evaluation.py": (ROOT / "src/sfsc/evaluation.py").read_text(),
+        }
+    )
+    return bundle
+
+
+def source_digest(source: dict[str, str]) -> str:
+    return canonical_digest(source)
+
+
+def _snapshot_source(directory: Path) -> dict[str, str]:
+    return {name: (directory / name).read_text() for name in BUNDLE_PATHS}
+
+
+def _assert_live_source_fresh(record: dict[str, Any]) -> None:
+    if source_digest(source_bundle()) != record["source_sha256"]:
+        raise ValueError("Prepared source is stale; prepare a new immutable run")
+
+
+def prepare(
+    *,
+    record_path: Path = RECORD,
+    outputs_root: Path | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Freeze the E1 smoke source, configuration, and exact image membership."""
+    record_path = Path(record_path)
+    outputs_root = Path(outputs_root) if outputs_root is not None else ROOT / "outputs"
+    if record_path.exists():
+        previous = json.loads(record_path.read_text())
+        if previous.get("status") not in TERMINAL_STATUSES:
+            raise RuntimeError("An existing PQ-SetFormer run is active")
+
+    legacy = frozen_split()
+    if {name: len(values) for name, values in legacy.items()} != {
+        "train": 495,
+        "validation": 106,
+        "calibration": 24,
+    }:
+        raise ValueError("Unexpected frozen development membership")
+    split = core.make_experiment_split(legacy["train"], pilot=1)
+    if tuple(map(len, split.members.values())) != (289, 69, 34, 87, 16):
+        raise ValueError("Blocked pilot-1 membership drifted")
+
+    experiment = ExperimentConfig(model=replace(ModelConfig(), input_size=1024))
+    run_id = run_id or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    directory = outputs_root / f"pq-setformer-{run_id}"
+    directory.mkdir(parents=True, exist_ok=False)
+    source = source_bundle()
+    git_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, timeout=30
+    ).strip()
+    if re.fullmatch(r"[0-9a-f]{40}", git_sha) is None:
+        raise ValueError("Could not bind the run to a Git commit")
+    for name, value in source.items():
+        target = directory / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(value)
+
+    training_names = split.fitting
+    inference_names = training_names[:2]
+    membership = {
+        "training_names": training_names,
+        "inference_names": inference_names,
+        "split": split.to_dict(),
+    }
+    record = {
+        "status": "prepared",
+        "stage": "E1-smoke",
+        "run_id": run_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "directory": str(directory.resolve()),
+        "kernel": f"{OWNER}/sfsc-pq-setformer-{run_id}",
+        "source_sha256": source_digest(source),
+        "source_files": list(source),
+        "vendor_lock_sha256": digest_bytes(source["vendor-lock.json"].encode()),
+        "git_sha": git_sha,
+        "membership_sha256": canonical_digest(membership),
+        "config_sha256": experiment.sha256,
+        "experiment": experiment.to_dict(),
+        "training_names": training_names,
+        "inference_names": inference_names,
+        "split": split.to_dict(),
+        "automatic_submission": False,
+    }
+    write_json(directory / "manifest.json", record)
+    write_json(record_path, record)
+    return record
+
+
+def _bootstrap(payload: str, lock: dict[str, Any]) -> str:
+    detectron = lock["detectron2"]["commit"]
+    maskdino = lock["maskdino"]["commit"]
+    return f'''"""Generated immutable PQ-SetFormer Kaggle launcher."""
+import base64, json, os, runpy, subprocess, sys, zlib
+from pathlib import Path
+
+os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "6.0")
+os.environ.setdefault("WANDB_MODE", "offline")
+os.environ.setdefault("MAX_JOBS", "2")
+
+def command(*args, cwd=None):
+    subprocess.check_call(list(args), cwd=cwd)
+
+command(sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps",
+        "torch==2.7.1", "torchvision==0.22.1",
+        "--index-url", "https://download.pytorch.org/whl/cu126")
+command(sys.executable, "-m", "pip", "install", "--quiet",
+        "wandb==0.30.0", "pycocotools==2.0.11", "scipy==1.15.3",
+        "timm==0.9.16", "ninja==1.11.1.4")
+command(sys.executable, "-m", "pip", "install", "--quiet", "--no-build-isolation",
+        "git+https://github.com/facebookresearch/detectron2.git@{detectron}")
+
+vendor = Path("/kaggle/working/vendor")
+command("git", "clone", "--quiet", "https://github.com/IDEA-Research/MaskDINO.git", str(vendor))
+command("git", "checkout", "--quiet", "{maskdino}", cwd=vendor)
+ops = vendor / "maskdino/modeling/pixel_decoder/ops"
+command("sh", "make.sh", cwd=ops)
+
+payload = json.loads(zlib.decompress(base64.b64decode({payload!r})))
+root = Path("/kaggle/working")
+for name, source in payload.items():
+    target = root / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source)
+sys.path[:0] = [str(root), str(vendor)]
+os.chdir(root)
+runpy.run_path(str(root / "remote.py"), run_name="__main__")
+'''
+
+
+def build_kernel(record: dict[str, Any]) -> Path:
+    """Build a self-contained launcher only from the prepared snapshot."""
+    directory = Path(record["directory"])
+    frozen = _snapshot_source(directory)
+    if source_digest(frozen) != record["source_sha256"]:
+        raise ValueError("Frozen source changed")
+    task = {
+        key: record[key]
+        for key in (
+            "run_id",
+            "stage",
+            "source_sha256",
+            "source_files",
+            "vendor_lock_sha256",
+            "git_sha",
+            "membership_sha256",
+            "config_sha256",
+            "experiment",
+            "training_names",
+            "inference_names",
+            "split",
+        )
+    }
+    payload = {**frozen, "task-config.json": json.dumps(task, sort_keys=True)}
+    encoded = base64.b64encode(zlib.compress(json.dumps(payload).encode(), level=9)).decode()
+    lock = json.loads(frozen["vendor-lock.json"])
+    launcher = _bootstrap(encoded, lock)
+    (directory / "run.py").write_text(launcher)
+    metadata = {
+        "id": record["kernel"],
+        "title": f"SFSC PQ-SetFormer smoke {record['run_id']}",
+        "code_file": "run.py",
+        "language": "python",
+        "kernel_type": "script",
+        "is_private": True,
+        "enable_gpu": True,
+        "enable_internet": True,
+        "machine_shape": "NvidiaTeslaP100",
+        "dataset_sources": [],
+        "competition_sources": ["filament-segmentation-2026"],
+        "kernel_sources": [],
+        "model_sources": [],
+    }
+    write_json(directory / "kernel-metadata.json", metadata)
+    write_json(directory / "task-config.json", task)
+    record["launcher_sha256"] = digest_bytes(launcher.encode())
+    return directory
+
+
+def _find_unique(directory: Path, filename: str) -> Path:
+    matches = list(directory.rglob(filename))
+    if len(matches) != 1:
+        raise ValueError(f"Expected one {filename}, found {len(matches)}")
+    return matches[0]
+
+
+def fetch_and_verify(record: dict[str, Any]) -> dict[str, Any]:
+    """Download all smoke evidence and independently validate its lineage."""
+    directory = Path(record["directory"])
+    destination = directory / "results"
+    destination.mkdir(parents=True, exist_ok=True)
+    output = _cli(
+        "kernels",
+        "output",
+        record["kernel"],
+        "-p",
+        str(destination),
+        "--force",
+        timeout=900,
+    )
+    (directory / "fetch.log").write_text(output)
+    report_path = _find_unique(destination, "smoke-report.json")
+    checkpoint = _find_unique(destination, "smoke-checkpoint.pt")
+    candidates = _find_unique(destination, "smoke-candidates.json")
+    logging_manifest = _find_unique(destination, "logging-manifest.json")
+    report = json.loads(report_path.read_text())
+    if any(
+        report.get(name) != record[name]
+        for name in (
+            "run_id",
+            "source_sha256",
+            "vendor_lock_sha256",
+            "git_sha",
+            "membership_sha256",
+            "config_sha256",
+        )
+    ):
+        raise ValueError("Smoke report lineage mismatch")
+    issues = audit.audit_smoke(report, checkpoint, candidates, logging_manifest.parent)
+    if issues:
+        raise ValueError("Smoke artifact audit failed: " + "; ".join(issues))
+    return report
+
+
+def _poll_status(record: dict[str, Any], record_path: Path) -> None:
+    failures = 0
+    while True:
+        try:
+            status = _cli("kernels", "status", record["kernel"]).strip()
+            failures = 0
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            failures += 1
+            if failures >= 5:
+                raise
+            time.sleep(30)
+            continue
+        record.update(
+            status="running",
+            remote_status=status,
+            checked_at=datetime.now(UTC).isoformat(),
+        )
+        write_json(record_path, record)
+        print(json.dumps({"kernel": record["kernel"], "remote_status": status}), flush=True)
+        upper = status.upper()
+        if "COMPLETE" in upper:
+            record.update(
+                status="remote_complete_fetch_pending",
+                remote_completed_at=datetime.now(UTC).isoformat(),
+            )
+            write_json(record_path, record)
+            return
+        if any(word in upper for word in ("ERROR", "FAIL", "CANCEL")):
+            raise RuntimeError(status)
+        time.sleep(45)
+
+
+def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
+    """Submit at most once, then monitor and verify the completed smoke run."""
+    record_path = Path(record_path)
+    if record["status"] == "prepared":
+        _assert_live_source_fresh(record)
+        directory = build_kernel(record)
+        record.update(status="pushing", push_started_at=datetime.now(UTC).isoformat())
+        write_json(record_path, record)
+        output = _cli(
+            "kernels",
+            "push",
+            "-p",
+            str(directory),
+            "--accelerator",
+            "NvidiaTeslaP100",
+            "--timeout",
+            "32400",
+            timeout=600,
+        )
+        (directory / "push.log").write_text(output)
+        urls = re.findall(r"https://www\.kaggle\.com/code/([\w-]+/[\w-]+)", output)
+        if not urls:
+            raise RuntimeError("Push result did not contain a Kaggle kernel URL")
+        record.update(
+            kernel=urls[-1],
+            status="running",
+            started_at=datetime.now(UTC).isoformat(),
+        )
+        write_json(record_path, record)
+    if record["status"] in {"pushing"}:
+        raise RuntimeError("Push outcome is ambiguous; inspect Kaggle before retrying")
+    if record["status"] == "running":
+        _poll_status(record, record_path)
+    if record["status"] != "remote_complete_fetch_pending":
+        raise RuntimeError(f"Cannot fetch run in state {record['status']!r}")
+    report = fetch_and_verify(record)
+    record.update(
+        status="smoke_complete",
+        verified_at=datetime.now(UTC).isoformat(),
+        report=report,
+    )
+    write_json(record_path, record)
+
+
+def record_controller_failure(record: dict[str, Any], record_path: Path, error: Exception) -> None:
+    """Persist failures without turning an ambiguous remote success into a rerunnable job."""
+    if record.get("status") in {"pushing", "remote_complete_fetch_pending"}:
+        record.update(
+            controller_error=str(error),
+            controller_stopped_at=datetime.now(UTC).isoformat(),
+        )
+    else:
+        record.update(
+            status="failed",
+            error=str(error),
+            stopped_at=datetime.now(UTC).isoformat(),
+        )
+    write_json(record_path, record)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("prepare", "run", "status"))
+    arguments = parser.parse_args()
+    if arguments.command == "prepare":
+        print(json.dumps(prepare(), indent=2))
+        return
+    if arguments.command == "status":
+        if not RECORD.is_file():
+            raise RuntimeError("No PQ-SetFormer run has been prepared")
+        print(RECORD.read_text(), end="")
+        return
+
+    RECORD.parent.mkdir(parents=True, exist_ok=True)
+    with RECORD.with_suffix(".lock").open("w") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("A PQ-SetFormer controller is already running") from error
+        record = json.loads(RECORD.read_text()) if RECORD.exists() else prepare()
+        try:
+            monitor(record)
+        except Exception as error:
+            record_controller_failure(record, RECORD, error)
+            raise
+
+
+if __name__ == "__main__":
+    main()

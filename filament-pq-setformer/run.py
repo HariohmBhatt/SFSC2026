@@ -216,6 +216,11 @@ vendor = Path("/kaggle/working/vendor")
 command("git", "clone", "--quiet", "https://github.com/IDEA-Research/MaskDINO.git", str(vendor))
 command("git", "checkout", "--quiet", "{maskdino}", cwd=vendor)
 ops = vendor / "maskdino/modeling/pixel_decoder/ops"
+dispatch = ops / "src/cuda/ms_deform_attn_cuda.cu"
+dispatch_source = dispatch.read_text()
+if dispatch_source.count("value.type()") != 2:
+    raise RuntimeError("Pinned MaskDINO dispatch source changed unexpectedly")
+dispatch.write_text(dispatch_source.replace("value.type()", "value.scalar_type()"))
 command("sh", "make.sh", cwd=ops)
 
 payload = json.loads(zlib.decompress(base64.b64decode({payload!r})))

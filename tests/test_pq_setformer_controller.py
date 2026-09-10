@@ -96,6 +96,22 @@ def test_kernel_bootstrap_pins_runtime_commits_sm60_and_wandb(tmp_path) -> None:
     )
 
 
+def test_kernel_bootstrap_patches_maskdino_legacy_torch_dispatch(tmp_path) -> None:
+    record = runner.prepare(
+        record_path=tmp_path / "record.json",
+        outputs_root=tmp_path / "outputs",
+        run_id="20260910-120004",
+    )
+
+    source = (runner.build_kernel(record) / "run.py").read_text()
+
+    assert 'dispatch_source.count("value.type()") != 2' in source
+    assert 'dispatch_source.replace("value.type()", "value.scalar_type()")' in source
+    assert source.index('dispatch_source.replace("value.type()"') < source.index(
+        'command("sh", "make.sh", cwd=ops)'
+    )
+
+
 def test_build_rejects_a_mutated_frozen_snapshot(tmp_path) -> None:
     record = runner.prepare(
         record_path=tmp_path / "record.json",

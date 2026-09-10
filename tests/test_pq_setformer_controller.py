@@ -54,6 +54,26 @@ def test_prepare_freezes_complete_source_config_and_membership(tmp_path) -> None
     }
 
 
+def test_prepare_freezes_selected_kaggle_owner(tmp_path) -> None:
+    record = runner.prepare(
+        record_path=tmp_path / "record.json",
+        outputs_root=tmp_path / "outputs",
+        run_id="20260910-120003",
+        owner="second-account",
+    )
+
+    assert record["kernel"] == "second-account/sfsc-pq-setformer-20260910-120003"
+
+
+def test_prepare_rejects_invalid_kaggle_owner(tmp_path) -> None:
+    with pytest.raises(ValueError, match="Invalid Kaggle owner"):
+        runner.prepare(
+            record_path=tmp_path / "record.json",
+            outputs_root=tmp_path / "outputs",
+            owner="owner/kernel",
+        )
+
+
 def test_kernel_bootstrap_pins_runtime_commits_sm60_and_wandb(tmp_path) -> None:
     record = runner.prepare(
         record_path=tmp_path / "record.json",

@@ -120,10 +120,13 @@ def prepare(
     record_path: Path = RECORD,
     outputs_root: Path | None = None,
     run_id: str | None = None,
+    owner: str = OWNER,
 ) -> dict[str, Any]:
     """Freeze the E1 smoke source, configuration, and exact image membership."""
     record_path = Path(record_path)
     outputs_root = Path(outputs_root) if outputs_root is not None else ROOT / "outputs"
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", owner) is None:
+        raise ValueError(f"Invalid Kaggle owner {owner!r}")
     if record_path.exists():
         previous = json.loads(record_path.read_text())
         if previous.get("status") not in TERMINAL_STATUSES:
@@ -168,7 +171,7 @@ def prepare(
         "run_id": run_id,
         "created_at": datetime.now(UTC).isoformat(),
         "directory": str(directory.resolve()),
-        "kernel": f"{OWNER}/sfsc-pq-setformer-{run_id}",
+        "kernel": f"{owner}/sfsc-pq-setformer-{run_id}",
         "source_sha256": source_digest(source),
         "source_files": list(source),
         "vendor_lock_sha256": digest_bytes(source["vendor-lock.json"].encode()),
@@ -429,9 +432,14 @@ def record_controller_failure(record: dict[str, Any], record_path: Path, error: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "run", "status"))
+    parser.add_argument(
+        "--owner",
+        default=OWNER,
+        help="Kaggle username that will own a newly prepared kernel",
+    )
     arguments = parser.parse_args()
     if arguments.command == "prepare":
-        print(json.dumps(prepare(), indent=2))
+        print(json.dumps(prepare(owner=arguments.owner), indent=2))
         return
     if arguments.command == "status":
         if not RECORD.is_file():

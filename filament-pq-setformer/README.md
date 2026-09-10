@@ -28,6 +28,14 @@ uv run python filament-pq-setformer/run.py status
 uv run python filament-pq-setformer/run.py run
 ```
 
+To prepare the kernel under a different authenticated Kaggle account, freeze
+that username explicitly and use the same credential context for `run`:
+
+```bash
+uv run python filament-pq-setformer/run.py prepare --owner KAGGLE_USERNAME
+uv run python filament-pq-setformer/run.py run
+```
+
 `prepare` freezes the exact source, configuration, and image membership under
 `outputs/pq-setformer-<timestamp>/` and writes the active record to
 `reports/pq_setformer_run.json`. `run` packages that snapshot, installs the

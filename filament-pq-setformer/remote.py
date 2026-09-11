@@ -149,15 +149,16 @@ def train_smoke(
     loader: DataLoader,
     experiment: ExperimentConfig,
     logger: experiment_logging.ExperimentLogger,
+    microbatches: int,
 ) -> tuple[dict, torch.optim.Optimizer, object]:
     device = torch.device("cuda:0")
     optimizer = torch.optim.AdamW(
         model_module.optimizer_groups(network, experiment),
         weight_decay=experiment.training.weight_decay,
     )
-    if experiment.training.smoke_microbatches % experiment.training.accumulation:
-        raise ValueError("Smoke microbatches must divide exactly into optimizer steps")
-    target_steps = experiment.training.smoke_microbatches // experiment.training.accumulation
+    if microbatches % experiment.training.accumulation:
+        raise ValueError("Training microbatches must divide exactly into optimizer steps")
+    target_steps = microbatches // experiment.training.accumulation
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lambda step: cosine_multiplier(step, target_steps, experiment.training.warmup_steps),
@@ -276,7 +277,7 @@ def train_smoke(
         raise RuntimeError("Training did not execute the declared optimizer-step count")
     return (
         {
-            "microbatches": experiment.training.smoke_microbatches,
+            "microbatches": microbatches,
             "attempted_microbatches": attempted_microbatches,
             "optimizer_steps": optimizer_step,
             "amp_overflows": amp_overflows,
@@ -301,8 +302,11 @@ def infer_smoke(
     experiment: ExperimentConfig,
 ) -> tuple[dict, dict]:
     cache = {}
-    predictions = {}
-    truths = {}
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    total_iou = 0.0
+    per_file = {}
     for presentation, filename in enumerate(names):
         item = data.build_training_item(
             index=annotation_index,
@@ -324,11 +328,16 @@ def infer_smoke(
             for row in raw
         ]
         masks = core.assemble_instances(candidates, recipe=experiment.assembly)
-        predictions[filename] = masks
-        truths[filename] = [
+        records = [
             list(data.rasterize_record(record, native_size=2048, output_size=2048))
             for record in annotation_index.records_by_file[filename]
         ]
+        metrics = core.evaluate_run({filename: masks}, {filename: records})
+        total_tp += metrics["tp"]
+        total_fp += metrics["fp"]
+        total_fn += metrics["fn"]
+        total_iou += metrics["sum_iou"]
+        per_file[filename] = metrics["files"][filename]
         cache[filename] = [
             {
                 "query_id": candidate.query_id,
@@ -338,10 +347,21 @@ def infer_smoke(
             }
             for candidate in candidates
         ]
-        del item, raw, candidates, masks
+        del item, raw, candidates, masks, records
     if not any(cache.values()):
-        raise RuntimeError("Smoke inference collapsed to an all-empty candidate set")
-    return cache, core.evaluate_run(predictions, truths)
+        raise RuntimeError("Stage inference collapsed to an all-empty candidate set")
+    denominator = total_tp + 0.5 * total_fp + 0.5 * total_fn
+    metrics = {
+        "pq": total_iou / denominator if denominator else 0.0,
+        "sq": total_iou / total_tp if total_tp else 0.0,
+        "rq": total_tp / denominator if denominator else 0.0,
+        "tp": total_tp,
+        "fp": total_fp,
+        "fn": total_fn,
+        "sum_iou": total_iou,
+        "files": per_file,
+    }
+    return cache, metrics
 
 
 def main() -> None:
@@ -351,6 +371,14 @@ def main() -> None:
     experiment = ExperimentConfig.from_dict(TASK["experiment"])
     if experiment.sha256 != TASK["config_sha256"]:
         raise ValueError("Experiment config hash mismatch")
+    run_kind = TASK["run_kind"]
+    expected_microbatches = (
+        experiment.training.smoke_microbatches
+        if run_kind == "smoke"
+        else experiment.training.target_microbatches
+    )
+    if run_kind not in {"smoke", "pilot"} or TASK["training_microbatches"] != expected_microbatches:
+        raise ValueError("Frozen run kind and training schedule disagree")
     seed_everything(experiment.training.seed)
     gpu = gpu_preflight()
     training_root = data.discover_dataset_root(Path("/kaggle/input"))
@@ -375,7 +403,7 @@ def main() -> None:
         "execution_source_sha256": TASK["source_sha256"],
         "project": experiment.logging.project,
         "job_type": "train",
-        "tags": ["E1", "smoke", str(experiment.model.input_size), gpu["name"]],
+        "tags": ["E1", run_kind, str(experiment.model.input_size), gpu["name"]],
         "config": {**experiment.to_dict(), "task": TASK},
         "wandb_version": experiment.logging.wandb_version,
     }
@@ -384,7 +412,7 @@ def main() -> None:
             index=annotation_index,
             image_directory=training_root / "train_images",
             filenames=TASK["training_names"],
-            presentations=experiment.training.smoke_microbatches
+            presentations=expected_microbatches
             + experiment.training.accumulation * MAX_AMP_OVERFLOWS,
             input_size=experiment.model.input_size,
             seed=experiment.training.seed,
@@ -403,7 +431,9 @@ def main() -> None:
         initial_fingerprint = hashlib.sha256(
             next(network.parameters()).detach().cpu().numpy().tobytes()
         ).hexdigest()
-        training, optimizer, scaler = train_smoke(network, loader, experiment, logger)
+        training, optimizer, scaler = train_smoke(
+            network, loader, experiment, logger, expected_microbatches
+        )
         if training["peak_reserved_gb"] > experiment.model.peak_vram_gb:
             raise RuntimeError(
                 f"Peak reserved memory {training['peak_reserved_gb']:.3f} GB exceeds "
@@ -415,7 +445,7 @@ def main() -> None:
         if initial_fingerprint == final_fingerprint:
             raise RuntimeError("Optimizer did not change the model fingerprint")
 
-        checkpoint = WORK / "smoke-checkpoint.pt"
+        checkpoint = WORK / f"{run_kind}-checkpoint.pt"
         torch.save(
             {
                 "model": network.state_dict(),
@@ -428,6 +458,9 @@ def main() -> None:
                 "git_sha": TASK["git_sha"],
                 "membership_sha256": TASK["membership_sha256"],
                 "dataset": TASK["dataset"],
+                "stage": TASK["stage"],
+                "run_kind": run_kind,
+                "training_microbatches": expected_microbatches,
                 "training": training,
             },
             checkpoint,
@@ -450,12 +483,14 @@ def main() -> None:
             TASK["inference_names"],
             experiment,
         )
-        cache_path = WORK / "smoke-candidates.json"
+        cache_path = WORK / f"{run_kind}-candidates.json"
         write_json(cache_path, cache)
         report = {
             "status": "complete",
             "run_id": TASK["run_id"],
             "stage": TASK["stage"],
+            "run_kind": run_kind,
+            "training_microbatches": expected_microbatches,
             "source_sha256": TASK["source_sha256"],
             "vendor_lock_sha256": TASK["vendor_lock_sha256"],
             "git_sha": TASK["git_sha"],
@@ -476,10 +511,10 @@ def main() -> None:
             "quality_kind": "mask_confidence_proxy",
             "wandb_run_id": logger.manifest["wandb_run_id"],
         }
-        report_path = WORK / "smoke-report.json"
+        report_path = WORK / f"{run_kind}-report.json"
         write_json(report_path, report)
         logger.log(
-            "smoke_evaluation",
+            f"{run_kind}_evaluation",
             **{
                 "eval/global_pq": metrics["pq"],
                 "eval/sq": metrics["sq"],
@@ -491,16 +526,16 @@ def main() -> None:
             },
         )
         logger.log_table(
-            "smoke_images",
+            f"{run_kind}_images",
             [{"filename": name, "candidates": len(rows)} for name, rows in sorted(cache.items())],
         )
         logger.log_artifact(
-            "smoke-model",
+            f"{run_kind}-model",
             [checkpoint],
             {"config_sha256": experiment.sha256, "source_sha256": TASK["source_sha256"]},
         )
         logger.log_artifact(
-            "smoke-evaluation",
+            f"{run_kind}-evaluation",
             [cache_path, report_path],
             {"membership_sha256": TASK["membership_sha256"]},
         )

@@ -28,7 +28,7 @@ HERE = Path(__file__).resolve().parent
 RECORD = ROOT / "reports/pq_setformer_run.json"
 OWNER = "hariohmhemantbhatt"
 PRIVATE_DATASET_SOURCE = "hariohmhemantbhatt/sfsc2026-private-data"
-TERMINAL_STATUSES = {"smoke_complete", "failed", "cancelled"}
+TERMINAL_STATUSES = {"smoke_complete", "pilot_complete", "failed", "cancelled"}
 SOURCE_PATHS = (
     "config.py",
     "core.py",
@@ -141,6 +141,7 @@ def prepare(
     outputs_root: Path | None = None,
     run_id: str | None = None,
     input_size: int = 1024,
+    run_kind: str = "smoke",
 ) -> dict[str, Any]:
     """Freeze the E1 smoke source, configuration, and exact image membership."""
     record_path = Path(record_path)
@@ -149,6 +150,8 @@ def prepare(
         previous = json.loads(record_path.read_text())
         if previous.get("status") not in TERMINAL_STATUSES:
             raise RuntimeError("An existing PQ-SetFormer run is active")
+    if run_kind not in {"smoke", "pilot"}:
+        raise ValueError("run_kind must be 'smoke' or 'pilot'")
 
     legacy = frozen_split()
     if {name: len(values) for name, values in legacy.items()} != {
@@ -177,7 +180,12 @@ def prepare(
         target.write_text(value)
 
     training_names = split.fitting
-    inference_names = training_names[:2]
+    inference_names = training_names[:2] if run_kind == "smoke" else split.assessment
+    training_microbatches = (
+        experiment.training.smoke_microbatches
+        if run_kind == "smoke"
+        else experiment.training.target_microbatches
+    )
     membership = {
         "training_names": training_names,
         "inference_names": inference_names,
@@ -185,7 +193,9 @@ def prepare(
     }
     record = {
         "status": "prepared",
-        "stage": f"E1-smoke-{input_size}",
+        "stage": f"E1-{run_kind}-{input_size}",
+        "run_kind": run_kind,
+        "training_microbatches": training_microbatches,
         "run_id": run_id,
         "created_at": datetime.now(UTC).isoformat(),
         "directory": str(directory.resolve()),
@@ -267,6 +277,8 @@ def build_kernel(record: dict[str, Any]) -> Path:
         for key in (
             "run_id",
             "stage",
+            "run_kind",
+            "training_microbatches",
             "source_sha256",
             "source_files",
             "vendor_lock_sha256",
@@ -287,7 +299,7 @@ def build_kernel(record: dict[str, Any]) -> Path:
     (directory / "run.py").write_text(launcher)
     metadata = {
         "id": record["kernel"],
-        "title": f"SFSC PQ-SetFormer smoke {record['run_id']}",
+        "title": f"SFSC PQ-SetFormer {record['run_kind']} {record['run_id']}",
         "code_file": "run.py",
         "language": "python",
         "kernel_type": "script",
@@ -328,15 +340,19 @@ def fetch_and_verify(record: dict[str, Any]) -> dict[str, Any]:
         timeout=900,
     )
     (directory / "fetch.log").write_text(output)
-    report_path = _find_unique(destination, "smoke-report.json")
-    checkpoint = _find_unique(destination, "smoke-checkpoint.pt")
-    candidates = _find_unique(destination, "smoke-candidates.json")
+    prefix = record["run_kind"]
+    report_path = _find_unique(destination, f"{prefix}-report.json")
+    checkpoint = _find_unique(destination, f"{prefix}-checkpoint.pt")
+    candidates = _find_unique(destination, f"{prefix}-candidates.json")
     logging_manifest = _find_unique(destination, "logging-manifest.json")
     report = json.loads(report_path.read_text())
     if any(
         report.get(name) != record[name]
         for name in (
             "run_id",
+            "stage",
+            "run_kind",
+            "training_microbatches",
             "source_sha256",
             "vendor_lock_sha256",
             "git_sha",
@@ -346,7 +362,19 @@ def fetch_and_verify(record: dict[str, Any]) -> dict[str, Any]:
         )
     ):
         raise ValueError("Smoke report lineage mismatch")
-    issues = audit.audit_smoke(report, checkpoint, candidates, logging_manifest.parent)
+    expected_steps = (
+        record["training_microbatches"] // record["experiment"]["training"]["accumulation"]
+    )
+    issues = audit.audit_stage(
+        report,
+        checkpoint,
+        candidates,
+        logging_manifest.parent,
+        expected_microbatches=record["training_microbatches"],
+        expected_optimizer_steps=expected_steps,
+        expected_candidate_images=len(record["inference_names"]),
+        accumulation=record["experiment"]["training"]["accumulation"],
+    )
     if issues:
         raise ValueError("Smoke artifact audit failed: " + "; ".join(issues))
     return report
@@ -429,7 +457,7 @@ def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
         raise RuntimeError(f"Cannot fetch run in state {record['status']!r}")
     report = fetch_and_verify(record)
     record.update(
-        status="smoke_complete",
+        status=f"{record['run_kind']}_complete",
         verified_at=datetime.now(UTC).isoformat(),
         report=report,
     )
@@ -468,9 +496,19 @@ def main() -> None:
         default=1024,
         help="Frozen square input size for a newly prepared preflight",
     )
+    parser.add_argument(
+        "--run-kind",
+        choices=("smoke", "pilot"),
+        default="smoke",
+        help="Run a short hardware smoke or the frozen 6,000-microbatch E1 pilot",
+    )
     arguments = parser.parse_args()
     if arguments.command == "prepare":
-        print(json.dumps(prepare(input_size=arguments.input_size), indent=2))
+        print(
+            json.dumps(
+                prepare(input_size=arguments.input_size, run_kind=arguments.run_kind), indent=2
+            )
+        )
         return
     if arguments.command == "status":
         if not RECORD.is_file():

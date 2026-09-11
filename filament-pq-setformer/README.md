@@ -1,8 +1,10 @@
 # PQ-SetFormer operator guide
 
-The code prepares and executes the mandatory E1 Kaggle P100 smoke. The private
-data, CUDA/MaskDINO build, AMP, memory, checkpoint, inference, and artifact gates
-passed at 1024 pixels in run `20260910-161954`.
+The code prepares and executes the mandatory E1 Kaggle P100 smoke and the
+subsequent frozen E1 pilot. The private data, CUDA/MaskDINO build, AMP, memory,
+checkpoint, inference, and artifact gates passed at 1024 pixels in run
+`20260910-161954` and at the selected 1216-pixel resolution in run
+`20260910-163643`.
 
 Training runs under Kaggle2 (`hariohmhemantbhatt`) and mounts only the private
 `hariohmhemantbhatt/sfsc2026-private-data` dataset. The kernel has no competition
@@ -41,6 +43,18 @@ uv run python filament-pq-setformer/run.py prepare --input-size 1216
 uv run python filament-pq-setformer/run.py run
 ```
 
+Once that preflight is verified, launch the 6,000-microbatch E1 research pilot
+at the selected resolution:
+
+```bash
+uv run python filament-pq-setformer/run.py prepare --run-kind pilot --input-size 1216
+uv run python filament-pq-setformer/run.py run
+```
+
+The pilot fits only the frozen 289-image R membership and evaluates its final
+checkpoint on the frozen 87-image H membership. It does not mount a competition
+source or submit predictions.
+
 `prepare` freezes the exact source, configuration, and image membership under
 `outputs/pq-setformer-<timestamp>/` and writes the active record to
 `reports/pq_setformer_run.json`. `run` packages that snapshot, installs the
@@ -59,7 +73,8 @@ preparing another job. If Kaggle completes but artifact download fails, it
 remains `remote_complete_fetch_pending`, and rerunning `run` retries only the
 fetch/audit.
 
-Terminal success is:
+Terminal success is `smoke_complete` for a preflight or `pilot_complete` for the
+long E1 pilot, for example:
 
 ```json
 {"status": "smoke_complete"}
@@ -87,9 +102,9 @@ wandb sync /absolute/path/to/offline-run-...
 
 ## What this does not do yet
 
-The current runner does not launch a long pilot, ablation sweep, OOF campaign,
-601-image deployment fit, competition inference, or Kaggle submission. Those
-stages are gated on measured smoke evidence and are specified in
+The current runner does not launch an ablation sweep, matched-R control, OOF
+campaign, 601-image deployment fit, competition inference, or Kaggle
+submission. Those stages are gated on measured pilot evidence and are specified in
 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). This boundary prevents an
 unverified custom CUDA build or unsafe memory estimate from consuming a full
 nine-hour P100 session.

@@ -47,17 +47,22 @@ def _valid_candidate(row: Any) -> bool:
     return decoded.shape == (2048, 2048) and bool(np.asarray(decoded).any())
 
 
-def audit_smoke(
+def audit_stage(
     report: Mapping[str, Any],
     checkpoint: Path,
     candidates: Path,
     logging_directory: Path,
+    *,
+    expected_microbatches: int,
+    expected_optimizer_steps: int,
+    expected_candidate_images: int | None = None,
+    accumulation: int = 4,
 ) -> list[str]:
     issues = []
     if not isinstance(report, Mapping):
         return ["report payload is not an object"]
     if report.get("status") != "complete":
-        issues.append("smoke report is not complete")
+        issues.append("stage report is not complete")
     gpu = report.get("gpu", {})
     if (
         not isinstance(gpu, Mapping)
@@ -73,8 +78,11 @@ def audit_smoke(
     for name in ("last_loss", "minimum_loss", "maximum_loss"):
         if not _finite(training.get(name)):
             issues.append(f"training {name} is missing or non-finite")
-    if training.get("microbatches") != 20 or training.get("optimizer_steps") != 5:
-        issues.append("training did not complete the frozen 20/5 smoke schedule")
+    if (
+        training.get("microbatches") != expected_microbatches
+        or training.get("optimizer_steps") != expected_optimizer_steps
+    ):
+        issues.append("training did not complete the frozen schedule")
     attempted = training.get("attempted_microbatches")
     overflows = training.get("amp_overflows")
     if (
@@ -83,7 +91,7 @@ def audit_smoke(
         or not isinstance(overflows, int)
         or isinstance(overflows, bool)
         or not 0 <= overflows <= 4
-        or attempted != 20 + 4 * overflows
+        or attempted != expected_microbatches + accumulation * overflows
     ):
         issues.append("AMP overflow accounting is invalid")
     peak_memory = training.get("peak_reserved_gb")
@@ -92,6 +100,11 @@ def audit_smoke(
         issues.append("training exceeded the declared P100 memory limit")
     if report.get("candidate_images", 0) < 1 or report.get("candidate_count", 0) < 1:
         issues.append("candidate output is empty or incomplete")
+    if (
+        expected_candidate_images is not None
+        and report.get("candidate_images") != expected_candidate_images
+    ):
+        issues.append("candidate image coverage does not match the frozen membership")
 
     checkpoint = Path(checkpoint)
     candidates = Path(candidates)
@@ -153,6 +166,23 @@ def audit_smoke(
     optimizer_steps = [
         event.get("step") for event in events if event.get("event") == "optimizer_step"
     ]
-    if optimizer_steps != list(range(1, 6)):
+    if optimizer_steps != list(range(1, expected_optimizer_steps + 1)):
         issues.append("optimizer-step logging is incomplete or non-monotonic")
     return issues
+
+
+def audit_smoke(
+    report: Mapping[str, Any],
+    checkpoint: Path,
+    candidates: Path,
+    logging_directory: Path,
+) -> list[str]:
+    """Backward-compatible audit for the frozen 20/5 smoke schedule."""
+    return audit_stage(
+        report,
+        checkpoint,
+        candidates,
+        logging_directory,
+        expected_microbatches=20,
+        expected_optimizer_steps=5,
+    )

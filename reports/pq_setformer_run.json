@@ -1,8 +1,8 @@
 {
   "automatic_submission": false,
-  "checked_at": "2026-09-10T16:29:18.026296+00:00",
-  "config_sha256": "ec7aa76e8de4f0e8ca6613c53d8f9e7378332cfa17949848177ec15c578ca6e3",
-  "created_at": "2026-09-10T16:19:54.998114+00:00",
+  "checked_at": "2026-09-11T04:38:39.415364+00:00",
+  "config_sha256": "85f604f6c0abc4c356e458871e09a4eee9be727bcd5fd62ce20e61a0ad14afd9",
+  "created_at": "2026-09-10T16:36:43.272099+00:00",
   "dataset": {
     "annotation_sha256": "5da9e92b5a1a1947fd5d57adb6688269625c48ec1ef884daf2a01618c9ed54a1",
     "bytes": 607987717,
@@ -10,7 +10,7 @@
     "sha256": "e9ef61ae423ed4cf218ded87807751a19581999e82d849825b56aaf9a1b99cf1",
     "source": "hariohmhemantbhatt/sfsc2026-private-data"
   },
-  "directory": "/home/hariohm/SFSC2026/outputs/pq-setformer-20260910-161954",
+  "directory": "/home/hariohm/SFSC2026/outputs/pq-setformer-20260910-163643",
   "experiment": {
     "assembly": {
       "containment": 0.9,
@@ -50,7 +50,7 @@
       "hidden_dim": 256,
       "importance_sample_ratio": 0.75,
       "input_channels": 1,
-      "input_size": 1024,
+      "input_size": 1216,
       "mask_dim": 256,
       "oversample_ratio": 3.0,
       "peak_vram_gb": 14.5,
@@ -75,24 +75,24 @@
     },
     "version": "pq-setformer-v1"
   },
-  "git_sha": "52f385aed3540e56e9c14db949af34c7dccfed3b",
+  "git_sha": "4185155d73577dca87732bc4be05b27a8c333b92",
   "inference_names": [
     "20110406082634Lh.jpeg",
     "20110410141654Bh.jpeg"
   ],
-  "kernel": "hariohmhemantbhatt/sfsc-pq-setformer-smoke-20260910-161954",
-  "launcher_sha256": "cc57bef45957488635c6a3b10867ee6b36ba05057959de160b9571b743db9df2",
+  "kernel": "hariohmhemantbhatt/sfsc-pq-setformer-smoke-20260910-163643",
+  "launcher_sha256": "8cd5de09786f49ea963a321c419b1e33300a62b0cc183fd6284e6828c6623b0f",
   "membership_sha256": "5e7bbb45306eabef8117a256eeef6ff8259433c1aee23a90359d6a666895d04b",
-  "push_started_at": "2026-09-10T16:20:05.032022+00:00",
-  "remote_completed_at": "2026-09-10T16:29:18.026854+00:00",
-  "remote_status": "hariohmhemantbhatt/sfsc-pq-setformer-smoke-20260910-161954 has status \"KernelWorkerStatus.COMPLETE\"",
+  "push_started_at": "2026-09-10T16:36:52.399216+00:00",
+  "remote_completed_at": "2026-09-11T04:38:39.415986+00:00",
+  "remote_status": "hariohmhemantbhatt/sfsc-pq-setformer-smoke-20260910-163643 has status \"KernelWorkerStatus.COMPLETE\"",
   "report": {
     "annotation_sha256": "5da9e92b5a1a1947fd5d57adb6688269625c48ec1ef884daf2a01618c9ed54a1",
     "candidate_count": 128,
     "candidate_images": 2,
-    "candidates_sha256": "ec47eb2939eaa2d4a3355850b11469b12d5cc168366fd63a1065c83a49b068cb",
-    "checkpoint_sha256": "8e3ebb8ba9cf1163657ff9683920bf9bfd4fea50d0c29791fc543503f2253e5a",
-    "config_sha256": "ec7aa76e8de4f0e8ca6613c53d8f9e7378332cfa17949848177ec15c578ca6e3",
+    "candidates_sha256": "af37573867ff588a2a97d25e6a4863e58b4d40ca9de22be08b272510bd55e2bb",
+    "checkpoint_sha256": "e9e8d4697d738f296e25b7ce116ec1f42a9bf89ad790bc90257af49a1579ea17",
+    "config_sha256": "85f604f6c0abc4c356e458871e09a4eee9be727bcd5fd62ce20e61a0ad14afd9",
     "dataset": {
       "annotation_sha256": "5da9e92b5a1a1947fd5d57adb6688269625c48ec1ef884daf2a01618c9ed54a1",
       "bytes": 607987717,
@@ -100,7 +100,7 @@
       "sha256": "e9ef61ae423ed4cf218ded87807751a19581999e82d849825b56aaf9a1b99cf1",
       "source": "hariohmhemantbhatt/sfsc2026-private-data"
     },
-    "git_sha": "52f385aed3540e56e9c14db949af34c7dccfed3b",
+    "git_sha": "4185155d73577dca87732bc4be05b27a8c333b92",
     "gpu": {
       "architectures": [
         "sm_50",
@@ -149,32 +149,32 @@
     "model_parameters": 41069893,
     "quality_head": false,
     "quality_kind": "mask_confidence_proxy",
-    "run_id": "20260910-161954",
+    "run_id": "20260910-163643",
     "source_sha256": "a80f0d0afaabaed8cbd79304edf94d1101c30168b02c2a2aafda3a13f7f78008",
-    "stage": "E1-smoke",
+    "stage": "E1-smoke-1216",
     "status": "complete",
     "training": {
       "amp_overflows": 0,
       "attempted_microbatches": 20,
-      "elapsed_seconds": 28.33697402200005,
-      "last_loss": 173.2059326171875,
+      "elapsed_seconds": 33.50293941899997,
+      "last_loss": 171.3986053466797,
       "last_record": {
         "annotation_record": "040102-20161002225034Lh",
         "filename": "20161002225034Lh.jpeg",
         "presentation": 19
       },
-      "maximum_loss": 323.8057861328125,
+      "maximum_loss": 322.64794921875,
       "microbatches": 20,
-      "minimum_loss": 156.28208923339844,
+      "minimum_loss": 154.7734832763672,
       "optimizer_steps": 5,
-      "peak_allocated_gb": 9.334836959838867,
-      "peak_reserved_gb": 9.451171875
+      "peak_allocated_gb": 10.043250560760498,
+      "peak_reserved_gb": 10.3359375
     },
     "vendor_lock_sha256": "fe9c3cbd2c4a0e0599bf35eabbdab69eefa4c30f43645b16820a251fd42f0032",
-    "wandb_bundle_sha256": "e18b29ae4eadc4a976794d6ad4c7c57a58246679e52242fc4f78ba093b459180",
-    "wandb_run_id": "c6ea29cc050aae50"
+    "wandb_bundle_sha256": "eeef23b2ae8934d8c0af156c78802e8b9a75ffbcc4a0f8ad71d21ff793d25f65",
+    "wandb_run_id": "66eea61ece4aa4a5"
   },
-  "run_id": "20260910-161954",
+  "run_id": "20260910-163643",
   "source_files": [
     "config.py",
     "core.py",
@@ -716,8 +716,8 @@
     "role_salt": "native-v4:9",
     "sha256": "53922d8f0287dd8cfac15d68632d1cc4f00f8704d63564e1fd0b29d3d26d1387"
   },
-  "stage": "E1-smoke",
-  "started_at": "2026-09-10T16:20:07.246878+00:00",
+  "stage": "E1-smoke-1216",
+  "started_at": "2026-09-10T16:36:54.380410+00:00",
   "status": "smoke_complete",
   "training_names": [
     "20110406082634Lh.jpeg",
@@ -1011,5 +1011,5 @@
     "20220803074752Th.jpeg"
   ],
   "vendor_lock_sha256": "fe9c3cbd2c4a0e0599bf35eabbdab69eefa4c30f43645b16820a251fd42f0032",
-  "verified_at": "2026-09-10T16:32:48.884288+00:00"
+  "verified_at": "2026-09-11T04:42:03.780297+00:00"
 }

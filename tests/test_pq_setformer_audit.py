@@ -102,6 +102,34 @@ def test_audit_accepts_complete_finite_hashed_smoke(tmp_path) -> None:
     assert audit.audit_smoke(report, checkpoint, candidates, logs) == []
 
 
+def test_audit_accepts_declared_pilot_schedule(tmp_path) -> None:
+    report, checkpoint, candidates, logs = valid_artifacts(tmp_path)
+    report["training"].update(
+        microbatches=6_000,
+        attempted_microbatches=6_000,
+        optimizer_steps=1_500,
+    )
+    events = [
+        {"event": "optimizer_step", "step": step, "values": {"loss": 1 / step}}
+        for step in range(1, 1_501)
+    ]
+    events.append({"event": "stage_terminal", "step": None, "values": {"status": "complete"}})
+    (logs / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+
+    assert (
+        audit.audit_stage(
+            report,
+            checkpoint,
+            candidates,
+            logs,
+            expected_microbatches=6_000,
+            expected_optimizer_steps=1_500,
+            expected_candidate_images=1,
+        )
+        == []
+    )
+
+
 def test_audit_rejects_complete_but_collapsed_or_corrupt_smoke(tmp_path) -> None:
     report, checkpoint, candidates, logs = valid_artifacts(tmp_path)
     report["candidate_count"] = 0

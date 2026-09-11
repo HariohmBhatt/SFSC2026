@@ -84,6 +84,34 @@ def test_prepare_freezes_selected_preflight_input_size(tmp_path) -> None:
     assert record["experiment"]["model"]["input_size"] == 1216
 
 
+def test_prepare_freezes_full_e1_pilot_schedule_and_assessment(tmp_path) -> None:
+    record = runner.prepare(
+        record_path=tmp_path / "record.json",
+        outputs_root=tmp_path / "outputs",
+        run_id="20260910-120006",
+        input_size=1216,
+        run_kind="pilot",
+    )
+
+    assert record["stage"] == "E1-pilot-1216"
+    assert record["run_kind"] == "pilot"
+    assert record["training_microbatches"] == 6_000
+    assert len(record["training_names"]) == 289
+    assert record["inference_names"] == record["split"]["members"]["assessment"]
+    assert len(record["inference_names"]) == 87
+    assert record["automatic_submission"] is False
+
+
+def test_prepare_rejects_unknown_run_kind(tmp_path) -> None:
+    with pytest.raises(ValueError, match="run_kind"):
+        runner.prepare(
+            record_path=tmp_path / "record.json",
+            outputs_root=tmp_path / "outputs",
+            run_id="20260910-120007",
+            run_kind="deployment",
+        )
+
+
 def test_kernel_bootstrap_pins_runtime_commits_sm60_and_wandb(tmp_path) -> None:
     record = runner.prepare(
         record_path=tmp_path / "record.json",

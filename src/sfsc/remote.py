@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 from sfsc.contracts import number, require
+from sfsc.kaggle_cli import account_for_owner, run_cli
 from sfsc.kaggle_runtime import artifact_hash, child
 from sfsc.system import System, digest, now, object_hash, read_json, write_json
 
@@ -169,9 +170,10 @@ def launch(system: System, run_id: str) -> dict:
         run["status"] = "launching"
         timeout = int(state["config"]["max_training_hours"] * 3600)
     # An ambiguous push stays 'launching': inspect it, never automatically double-submit.
-    result = subprocess.run(
+    owner = run["kernel"].split("/", 1)[0]
+    account = account_for_owner(owner)
+    result = run_cli(
         [
-            "kaggle",
             "kernels",
             "push",
             "--path",
@@ -181,12 +183,10 @@ def launch(system: System, run_id: str) -> dict:
             "--timeout",
             str(timeout),
         ],
-        capture_output=True,
-        text=True,
-        check=True,
+        account,
         timeout=120,
     )
-    (directory / "launch.log").write_text(result.stdout + result.stderr)
+    (directory / "launch.log").write_text(result)
     with system.transaction() as state:
         state["runs"][run_id]["status"] = "submitted"
         system.event(state, "run_submitted", run_id=run_id)
@@ -274,31 +274,20 @@ def collect(system: System, run_id: str, report_path: Path) -> dict:
 def remote_status(system: System, run_id: str) -> str:
     state = system.status()
     require(run_id in state["runs"], "Unknown run")
-    result = subprocess.run(
-        ["kaggle", "kernels", "status", state["runs"][run_id]["kernel"]],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=60,
-    )
-    return result.stdout.strip()
+    kernel = state["runs"][run_id]["kernel"]
+    owner = kernel.split("/", 1)[0]
+    return run_cli(["kernels", "status", kernel], account_for_owner(owner), timeout=60).strip()
 
 
 def fetch(system: System, run_id: str) -> dict:
     state = system.status()
     require(run_id in state["runs"], "Unknown run")
     folder = system.home / "runs" / run_id / "download"
-    subprocess.run(
-        [
-            "kaggle",
-            "kernels",
-            "output",
-            state["runs"][run_id]["kernel"],
-            "--path",
-            str(folder),
-            "--force",
-        ],
-        check=True,
+    kernel = state["runs"][run_id]["kernel"]
+    owner = kernel.split("/", 1)[0]
+    run_cli(
+        ["kernels", "output", kernel, "--path", str(folder), "--force"],
+        account_for_owner(owner),
         timeout=300,
     )
     reports = list(folder.rglob("report.json"))

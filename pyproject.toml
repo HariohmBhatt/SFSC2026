@@ -26,6 +26,7 @@ sfsc-audit = "sfsc.audit:main"
 sfsc-system = "sfsc.cli:main"
 sfsc-model-worker = "sfsc.model_worker:main"
 sfsc-watch = "sfsc.watch:main"
+sfsc-telegram = "sfsc.telegram_watch:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sfsc"]

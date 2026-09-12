@@ -77,6 +77,7 @@ def test_quality_adapter_is_packaged_and_wrapper_uses_its_real_features() -> Non
 
     assert "_conditional_iou_loss" in model
     assert "self.base.criterion.matcher" in model
+    assert "quality_targets = torch.zeros_like(quality_logits)" in model
     assert "pred_query_features" in model
     assert "pixel_features" in model
     assert "mask_confidence_proxy" not in model

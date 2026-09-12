@@ -270,7 +270,7 @@ class PQSetFormer(nn.Module):
             query_features, outputs["pred_masks"], pixel_features
         )
         matched = self.base.criterion.matcher(outputs, targets)
-        values = []
+        quality_targets = torch.zeros_like(quality_logits)
         for batch_index, (query_indices, target_indices) in enumerate(matched):
             if not len(query_indices):
                 continue
@@ -282,15 +282,10 @@ class PQSetFormer(nn.Module):
             intersection = (predicted_binary & target_binary).flatten(1).sum(1)
             union = (predicted_binary | target_binary).flatten(1).sum(1).clamp_min(1)
             realized_iou = (intersection / union).detach().to(quality_logits.dtype)
-            values.append(
-                F.binary_cross_entropy_with_logits(
-                    quality_logits[batch_index, query_indices], realized_iou
-                )
-            )
-        if not values:
-            # Preserve a finite connected scalar for empty-target microbatches.
-            return quality_logits.sum() * 0
-        return torch.stack(values).mean()
+            quality_targets[batch_index, query_indices] = realized_iou
+        # Every unmatched/no-object query deliberately keeps its zero target;
+        # without it the E2 head cannot learn to down-rank false candidates.
+        return F.binary_cross_entropy_with_logits(quality_logits, quality_targets.detach())
 
     @torch.no_grad()
     def predict(

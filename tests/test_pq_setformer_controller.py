@@ -3,8 +3,11 @@
 import importlib.util
 import json
 import sys
+from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -203,47 +206,294 @@ def test_push_parser_rejects_cli_error_even_when_process_exits_zero() -> None:
         runner.kernel_from_push_output(output)
 
 
-def test_gate_decision_requires_matched_control_and_never_promotes_execution_alone(
-    tmp_path,
-) -> None:
+def test_gate_rejects_unverified_or_tampered_manual_assessment(tmp_path) -> None:
     record_path = tmp_path / "record.json"
-    missing_control = {"pq_delta": 0.1}
-    record = {"status": "assessment_complete", "run_id": "run-1", "assessment": missing_control}
-
-    failed = runner.record_promotion_gate(record, record_path, missing_control)
-
-    assert failed["status"] == "gate_failed"
-    assert "matched control" in failed["gate_failure_reason"]
-    success = {
+    manual = {
+        "verified": False,
         "matched_control": {"run_id": "control"},
-        "diagnostics": {"raw_candidate_recall": 0.8, "final_recall": 0.7},
+        "diagnostics": {
+            "raw_candidate_recall": 0.8,
+            "final_recall": 0.7,
+            "fragmentation": 0,
+            "merges": 0,
+            "instance_count_absolute_error": 0,
+        },
         "bootstrap": {"pq_delta": 0.02, "bootstrap_lower_95": 0.001},
         "rq_delta": 0.01,
         "sq_delta": 0.0,
     }
-    promoted = runner.record_promotion_gate(
-        {"status": "assessment_complete", "run_id": "run-2", "assessment": success},
-        record_path,
-        success,
+    record = {"status": "assessment_complete", "assessment": manual}
+
+    with pytest.raises(ValueError, match="verified"):
+        runner.record_promotion_gate(record, record_path)
+
+    manual["verified"] = True
+    manual["assessment_contract_sha256"] = "a" * 64
+    manual["sha256"] = runner.canonical_digest(
+        {key: value for key, value in manual.items() if key != "sha256"}
     )
+    record["assessment_contract"] = {"sha256": "a" * 64}
+    manual["bootstrap"]["pq_delta"] = 0.9
 
-    assert promoted["status"] == "promoted"
+    with pytest.raises(ValueError, match="seal"):
+        runner.record_promotion_gate(record, record_path)
 
 
-def test_h_assessment_requires_frozen_calibration_and_exact_h_membership(tmp_path) -> None:
+def _write_json(path: Path, value) -> None:
+    path.write_text(json.dumps(value, sort_keys=True) + "\n")
+
+
+def _verified_assessment_fixture(tmp_path):
+    filename = "20110101000000Bh.jpeg"
+    membership_sha256 = runner.canonical_digest([filename])
+    training_name = "20100101000000Bh.jpeg"
+    training_membership_sha256 = runner.canonical_digest([training_name])
+    annotation_path = tmp_path / "annotations.json"
+    annotation = {
+        "images": [{"id": 1, "file_name": filename}],
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 1,
+                "segmentation": [[256, 256, 768, 256, 768, 768, 256, 768]],
+            }
+        ],
+    }
+    _write_json(annotation_path, annotation)
+
+    mask = np.zeros((2048, 2048), dtype=bool)
+    mask[256:769, 256:769] = True
+    probability = np.where(mask, 0.99, 0.01).astype(np.float32)
+    candidate = runner.core.Candidate(
+        "q000",
+        mask,
+        0.99,
+        1.0,
+        probability,
+        presence_logit=4.6,
+        source="identity",
+    )
+    candidate_path = tmp_path / "h-candidates.json"
+    _write_json(candidate_path, {filename: [runner.core.serialize_candidate(candidate)]})
+    cached = runner.core.deserialize_candidate(json.loads(candidate_path.read_text())[filename][0])
+    index = runner.data.load_annotation_index(annotation_path, {filename})
+    truths = {
+        filename: [
+            list(runner.data.rasterize_record(row, native_size=2048, output_size=2048))
+            for row in index.records_by_file[filename]
+        ]
+    }
+
+    calibrator = runner.core.Calibrator(
+        feature_names=runner.core.FEATURE_NAMES,
+        mean=(0.0,) * len(runner.core.FEATURE_NAMES),
+        scale=(1.0,) * len(runner.core.FEATURE_NAMES),
+        coefficients=(10.0,) + (0.0,) * len(runner.core.FEATURE_NAMES),
+        regularization=0.02,
+        examples=1,
+        membership_sha256="f" * 64,
+        candidate_sha256="e" * 64,
+    )
+    recipe = runner.AssemblyConfig(utility_threshold=0.0, minimum_area=0)
+    predictions = {
+        filename: runner.core.assemble_instances([cached], recipe=recipe, calibrator=calibrator)
+    }
+    challenger_metrics = runner.core.evaluate_run(predictions, truths)
+
+    calibration_path = tmp_path / "q-calibration.json"
+    calibration = {
+        "schema_version": 1,
+        "kind": "q-fit-q-cal-only",
+        "source_sha256": "1" * 64,
+        "config_sha256": "2" * 64,
+        "membership_sha256": "3" * 64,
+        "calibrator": calibrator.to_dict(),
+        "calibrator_sha256": calibrator.sha256,
+        "assembly": asdict(recipe),
+        "selection": {"selection_split": "Q-cal"},
+    }
+    calibration["sha256"] = runner.canonical_digest(calibration)
+    _write_json(calibration_path, calibration)
+
+    challenger_checkpoint = tmp_path / "challenger.pt"
+    challenger_checkpoint.write_bytes(b"challenger")
+    control_checkpoint = tmp_path / "control.pt"
+    control_checkpoint.write_bytes(b"control")
+    challenger_checkpoint_sha256 = runner.digest(challenger_checkpoint)
+    control_checkpoint_sha256 = runner.digest(control_checkpoint)
+
+    control_predictions_path = tmp_path / "control-predictions.json"
+    _write_json(
+        control_predictions_path,
+        {"schema_version": 1, "predictions": {filename: []}},
+    )
+    control_predictions_sha256 = runner.digest(control_predictions_path)
+
+    challenger_report_path = tmp_path / "challenger-report.json"
+    challenger_report = {
+        "status": "complete",
+        "run_id": "challenger-1",
+        "model_role": "challenger",
+        "assessment_membership_sha256": membership_sha256,
+        "training_membership_sha256": training_membership_sha256,
+        "source_sha256": "1" * 64,
+        "config_sha256": "2" * 64,
+        "checkpoint_sha256": challenger_checkpoint_sha256,
+        "candidates_sha256": runner.digest(candidate_path),
+        "inference": challenger_metrics,
+    }
+    _write_json(challenger_report_path, challenger_report)
+
+    control_report_path = tmp_path / "control-report.json"
+    control_report = {
+        "status": "complete",
+        "run_id": "control-1",
+        "model_role": "matched_r_control",
+        "assessment_membership_sha256": membership_sha256,
+        "training_membership_sha256": training_membership_sha256,
+        "source_sha256": "4" * 64,
+        "config_sha256": "5" * 64,
+        "checkpoint_sha256": control_checkpoint_sha256,
+        "predictions_sha256": control_predictions_sha256,
+        "inference": {
+            "pq": 0.0,
+            "sq": 0.0,
+            "rq": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 1,
+            "sum_iou": 0.0,
+            "files": {
+                filename: {
+                    "true_positives": 0,
+                    "false_positives": 0,
+                    "false_negatives": 1,
+                    "matched_iou": 0.0,
+                }
+            },
+        },
+    }
+    _write_json(control_report_path, control_report)
+
     record_path = tmp_path / "record.json"
     record = {
         "status": "calibration_complete",
-        "split": {"members": {"assessment": ["20110101000000Bh.jpeg"]}},
+        "source_sha256": "1" * 64,
+        "config_sha256": "2" * 64,
+        "calibration_path": str(calibration_path),
+        "calibration_sha256": runner.digest(calibration_path),
+        "dataset": {"annotation_sha256": runner.digest(annotation_path)},
+        "report": {"checkpoint_sha256": challenger_checkpoint_sha256},
+        "split": {
+            "members": {"assessment": [filename], "fitting": [training_name]},
+            "assessment_blocks": [date(2011, 1, 1).toordinal() // 60],
+        },
     }
-    evidence = {
-        "challenger": {},
-        "matched_control": {},
-        "diagnostics": {},
-        "bootstrap": {},
-        "assessment_membership_sha256": runner.canonical_digest(["20110101000000Bh.jpeg"]),
+    contract_path = tmp_path / "assessment-contract.json"
+    contract = {
+        "assessment_membership_sha256": membership_sha256,
+        "challenger": {
+            "run_id": "challenger-1",
+            "model_role": "challenger",
+            "source_sha256": "1" * 64,
+            "config_sha256": "2" * 64,
+            "training_membership_sha256": training_membership_sha256,
+            "checkpoint_path": str(challenger_checkpoint),
+            "checkpoint_sha256": challenger_checkpoint_sha256,
+        },
+        "matched_control": {
+            "run_id": "control-1",
+            "model_role": "matched_r_control",
+            "source_sha256": "4" * 64,
+            "config_sha256": "5" * 64,
+            "training_membership_sha256": training_membership_sha256,
+            "checkpoint_path": str(control_checkpoint),
+            "checkpoint_sha256": control_checkpoint_sha256,
+        },
     }
+    _write_json(contract_path, contract)
+    runner.freeze_h_assessment_contract(record, record_path, contract_path)
 
-    result = runner.record_frozen_h_assessment(record, record_path, evidence)
+    bundle_path = tmp_path / "assessment-bundle.json"
+    bundle = {
+        "assessment_membership_sha256": membership_sha256,
+        "assessment_contract_sha256": record["assessment_contract"]["sha256"],
+        "challenger": {
+            "report_path": str(challenger_report_path),
+            "report_sha256": runner.digest(challenger_report_path),
+            "candidates_path": str(candidate_path),
+            "candidates_sha256": runner.digest(candidate_path),
+            "checkpoint_path": str(challenger_checkpoint),
+            "checkpoint_sha256": challenger_checkpoint_sha256,
+        },
+        "matched_control": {
+            "report_path": str(control_report_path),
+            "report_sha256": runner.digest(control_report_path),
+            "predictions_path": str(control_predictions_path),
+            "predictions_sha256": control_predictions_sha256,
+            "checkpoint_path": str(control_checkpoint),
+            "checkpoint_sha256": control_checkpoint_sha256,
+        },
+        # These values are deliberately false; the verifier must ignore and recompute them.
+        "bootstrap": {"pq_delta": -99.0},
+        "diagnostics": {"raw_candidate_recall": -99.0},
+    }
+    _write_json(bundle_path, bundle)
+    return record, record_path, bundle_path, annotation_path, candidate_path
 
-    assert result["status"] == "assessment_complete"
+
+def test_h_assessment_recomputes_evidence_and_only_verified_record_can_promote(tmp_path) -> None:
+    record, record_path, bundle_path, annotation_path, _ = _verified_assessment_fixture(tmp_path)
+
+    assessed = runner.record_frozen_h_assessment(
+        record, record_path, bundle_path, annotation_path=annotation_path
+    )
+
+    assert assessed["status"] == "assessment_complete"
+    assert assessed["assessment"]["verified"] is True
+    assert assessed["assessment"]["bootstrap"]["pq_delta"] > 0.9
+    assert assessed["assessment"]["diagnostics"]["raw_candidate_recall"] > 0.9
+    assert assessed["assessment"]["evaluator_parity_error"] <= 1e-8
+    assert runner.record_promotion_gate(assessed, record_path)["status"] == "promoted"
+
+
+def test_h_assessment_rejects_candidate_artifact_tampered_after_bundle_freeze(tmp_path) -> None:
+    record, record_path, bundle_path, annotation_path, candidate_path = (
+        _verified_assessment_fixture(tmp_path)
+    )
+    candidate_path.write_text("{}\n")
+
+    with pytest.raises(ValueError, match="hash-mismatched"):
+        runner.record_frozen_h_assessment(
+            record, record_path, bundle_path, annotation_path=annotation_path
+        )
+
+
+def test_h_assessment_rejects_control_metrics_not_reproduced_by_control_masks(tmp_path) -> None:
+    record, record_path, bundle_path, annotation_path, _ = _verified_assessment_fixture(tmp_path)
+    bundle = json.loads(bundle_path.read_text())
+    report_path = Path(bundle["matched_control"]["report_path"])
+    report = json.loads(report_path.read_text())
+    report["inference"].update(
+        pq=1.0,
+        sq=1.0,
+        rq=1.0,
+        tp=1,
+        fp=0,
+        fn=0,
+        sum_iou=1.0,
+    )
+    report["inference"]["files"][next(iter(report["inference"]["files"]))] = {
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "matched_iou": 1.0,
+    }
+    _write_json(report_path, report)
+    bundle["matched_control"]["report_sha256"] = runner.digest(report_path)
+    _write_json(bundle_path, bundle)
+
+    with pytest.raises(ValueError, match="Matched-control H evaluator metrics"):
+        runner.record_frozen_h_assessment(
+            record, record_path, bundle_path, annotation_path=annotation_path
+        )

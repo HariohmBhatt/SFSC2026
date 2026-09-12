@@ -64,14 +64,25 @@ uv run python filament-pq-setformer/run.py calibrate
 ```
 
 It writes a hashed `q-calibration.json` alongside the immutable stage directory.
-The separate one-shot H runner must write its matched-control evidence to a JSON
-file whose H membership hash is exact; only then can the controller record the
-assessment and gate it:
+Before opening H, freeze an assessment contract that identifies the challenger
+and independently trained matched-R control, their exact R membership, and both
+checkpoint/source/config hashes. The separate one-shot H runner then supplies
+only hashed artifact locations. The controller reconstructs challenger
+predictions, decodes the matched-control final masks, recomputes both sides with
+the same evaluator, verifies report parity, and reruns the blocked bootstrap
+locally:
 
 ```bash
-uv run python filament-pq-setformer/run.py assess --evidence /path/to/h-evidence.json
-uv run python filament-pq-setformer/run.py gate --evidence /path/to/gate-evidence.json
+uv run python filament-pq-setformer/run.py freeze-assessment \
+  --evidence /path/to/assessment-contract.json
+uv run python filament-pq-setformer/run.py assess \
+  --evidence /path/to/h-artifact-bundle.json
+uv run python filament-pq-setformer/run.py gate
 ```
+
+`gate` never accepts external metrics. It consumes only the sealed assessment
+stored by the verifier; altered, incomplete, wrong-membership, or hash-mismatched
+artifacts cannot reach `promoted`.
 
 `prepare` freezes the exact source, configuration, and image membership under
 `outputs/pq-setformer-<timestamp>/` and writes the active record to

@@ -258,7 +258,7 @@ class PQSetFormer(nn.Module):
     def _conditional_iou_loss(
         self, outputs: Mapping[str, torch.Tensor], targets: Sequence[Mapping[str, torch.Tensor]]
     ) -> torch.Tensor:
-        """Supervise only Hungarian-matched queries with detached realized IoU."""
+        """Supervise matched queries with realized IoU and no-object queries with zero."""
         try:
             query_features = outputs["pred_query_features"]
             pixel_features = outputs["pixel_features"]

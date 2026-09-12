@@ -9,10 +9,12 @@ import fcntl
 import functools
 import hashlib
 import json
+import math
 import re
 import subprocess
 import time
 import zlib
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,7 +23,7 @@ from typing import Any
 import audit
 import core
 import data
-from config import ExperimentConfig, ModelConfig
+from config import AssemblyConfig, ExperimentConfig, ModelConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
@@ -503,9 +505,7 @@ def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
     write_json(record_path, record)
 
 
-def record_promotion_gate(
-    record: dict[str, Any], record_path: Path, evidence: dict[str, Any]
-) -> dict[str, Any]:
+def record_promotion_gate(record: dict[str, Any], record_path: Path) -> dict[str, Any]:
     """Record the only terminal state permitted after a successful execution.
 
     Promotion needs an independently trained matched-R control and the complete
@@ -515,8 +515,18 @@ def record_promotion_gate(
     """
     if record.get("status") != "assessment_complete":
         raise ValueError("Only a frozen H assessment can enter the promotion gate")
-    if evidence != record.get("assessment"):
-        raise ValueError("Promotion gate evidence must be the immutable recorded H assessment")
+    evidence = record.get("assessment")
+    if not isinstance(evidence, dict) or evidence.get("verified") is not True:
+        raise ValueError("Promotion gate requires a verified stored H assessment bundle")
+    evidence_sha256 = evidence.get("sha256")
+    unsigned_evidence = {key: value for key, value in evidence.items() if key != "sha256"}
+    if evidence_sha256 != canonical_digest(unsigned_evidence):
+        raise ValueError("Stored H assessment seal is invalid")
+    contract = record.get("assessment_contract")
+    if not isinstance(contract, dict) or contract.get("sha256") != evidence.get(
+        "assessment_contract_sha256"
+    ):
+        raise ValueError("Stored H assessment no longer matches its frozen contract")
     diagnostics = evidence.get("diagnostics")
     bootstrap = evidence.get("bootstrap")
     reason = None
@@ -525,8 +535,11 @@ def record_promotion_gate(
     elif not isinstance(diagnostics, dict) or not {
         "raw_candidate_recall",
         "final_recall",
+        "fragmentation",
+        "merges",
+        "instance_count_absolute_error",
     } <= set(diagnostics):
-        reason = "required candidate recall diagnostics are absent"
+        reason = "required candidate diagnostics are absent"
     elif not isinstance(bootstrap, dict) or not {
         "pq_delta",
         "bootstrap_lower_95",
@@ -536,6 +549,10 @@ def record_promotion_gate(
         reason = "PQ gate did not pass"
     elif evidence.get("rq_delta", 0.0) <= 0 or evidence.get("sq_delta", 0.0) < -0.01:
         reason = "recognition/segmentation quality gate did not pass"
+    elif evidence.get("evaluator_parity_error", math.inf) > 1e-8:
+        reason = "evaluator parity gate did not pass"
+    elif evidence.get("no_catastrophic_site_regression") is not True:
+        reason = "site-collapse gate did not pass"
     record["promotion_evidence"] = evidence
     record["gate_decided_at"] = datetime.now(UTC).isoformat()
     if reason:
@@ -547,21 +564,347 @@ def record_promotion_gate(
     return record
 
 
-def record_frozen_h_assessment(
-    record: dict[str, Any], record_path: Path, evidence: dict[str, Any]
+def _artifact_path_and_hash(section: Mapping[str, Any], kind: str) -> tuple[Path, str]:
+    path = Path(str(section.get(f"{kind}_path", ""))).resolve()
+    expected = section.get(f"{kind}_sha256")
+    if not path.is_file() or not isinstance(expected, str) or digest(path) != expected:
+        raise ValueError(f"Assessment {kind} artifact is missing or hash-mismatched")
+    return path, expected
+
+
+_STAT_ALIASES = {
+    "tp": ("tp", "true_positives"),
+    "fp": ("fp", "false_positives"),
+    "fn": ("fn", "false_negatives"),
+    "sum_iou": ("sum_iou", "matched_iou"),
+}
+
+
+def _stats(value: Mapping[str, Any]) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for output, aliases in _STAT_ALIASES.items():
+        item = next((value[name] for name in aliases if name in value), None)
+        if (
+            not isinstance(item, (int, float))
+            or isinstance(item, bool)
+            or not math.isfinite(item)
+            or item < 0
+        ):
+            raise ValueError("Assessment per-file sufficient statistics are invalid")
+        result[output] = float(item)
+    return result
+
+
+def _metrics_from_stats(value: Mapping[str, Any]) -> dict[str, float]:
+    stats = _stats(value)
+    denominator = stats["tp"] + 0.5 * (stats["fp"] + stats["fn"])
+    return {
+        **stats,
+        "pq": stats["sum_iou"] / denominator if denominator else 0.0,
+        "sq": stats["sum_iou"] / stats["tp"] if stats["tp"] else 0.0,
+        "rq": stats["tp"] / denominator if denominator else 0.0,
+    }
+
+
+def _summed_metrics(files: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
+    totals = {key: 0.0 for key in _STAT_ALIASES}
+    for value in files.values():
+        for key, item in _stats(value).items():
+            totals[key] += item
+    return _metrics_from_stats(totals)
+
+
+def _metric_difference(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> float:
+    actual_metrics = _metrics_from_stats(actual)
+    expected_metrics = _metrics_from_stats(expected)
+    differences = [
+        abs(actual_metrics[key] - expected_metrics[key]) for key in ("tp", "fp", "fn", "sum_iou")
+    ]
+    for key in ("pq", "sq", "rq"):
+        value = expected.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+        ):
+            raise ValueError("Assessment metric summary is incomplete or non-finite")
+        differences.append(abs(actual_metrics[key] - float(value)))
+    return max(differences, default=0.0)
+
+
+def _verified_calibration(record: Mapping[str, Any]) -> tuple[dict[str, Any], Path]:
+    calibration_path = Path(str(record.get("calibration_path", ""))).resolve()
+    if not calibration_path.is_file() or digest(calibration_path) != record.get(
+        "calibration_sha256"
+    ):
+        raise ValueError("Frozen Q calibration artifact is missing or hash-mismatched")
+    calibration = json.loads(calibration_path.read_text())
+    declared = calibration.get("sha256")
+    unsigned = {key: value for key, value in calibration.items() if key != "sha256"}
+    if declared != canonical_digest(unsigned):
+        raise ValueError("Frozen Q calibration internal hash is invalid")
+    calibrator = core.Calibrator.from_dict(calibration["calibrator"])
+    if calibrator.sha256 != calibration.get("calibrator_sha256"):
+        raise ValueError("Frozen calibrator hash is invalid")
+    AssemblyConfig(**calibration["assembly"])
+    return calibration, calibration_path
+
+
+def freeze_h_assessment_contract(
+    record: dict[str, Any], record_path: Path, contract_path: Path
 ) -> dict[str, Any]:
-    """Attach downloaded one-shot H evidence only after Q calibration freezes."""
+    """Freeze model/control provenance before any one-shot H assessment is accepted."""
     if record.get("status") != "calibration_complete":
-        raise ValueError("H assessment requires a completed frozen Q calibration")
-    required = {"challenger", "matched_control", "diagnostics", "bootstrap"}
-    if not required <= set(evidence):
+        raise ValueError("H assessment contract requires completed Q calibration")
+    calibration, _ = _verified_calibration(record)
+    contract_path = Path(contract_path)
+    if not contract_path.is_file():
+        raise ValueError("H assessment contract is missing")
+    supplied = json.loads(contract_path.read_text())
+    if not isinstance(supplied, dict) or not {
+        "challenger",
+        "matched_control",
+        "assessment_membership_sha256",
+    } <= set(supplied):
+        raise ValueError("H assessment contract is incomplete")
+    h_membership = canonical_digest(sorted(record["split"]["members"]["assessment"]))
+    training_membership = canonical_digest(sorted(record["split"]["members"]["fitting"]))
+    if supplied["assessment_membership_sha256"] != h_membership:
+        raise ValueError("H assessment contract membership is invalid")
+    challenger = supplied["challenger"]
+    control = supplied["matched_control"]
+    for name, section in (("challenger", challenger), ("matched control", control)):
+        if not isinstance(section, dict) or not {
+            "run_id",
+            "model_role",
+            "source_sha256",
+            "config_sha256",
+            "training_membership_sha256",
+            "checkpoint_path",
+            "checkpoint_sha256",
+        } <= set(section):
+            raise ValueError(f"H assessment {name} contract is incomplete")
+        checkpoint_path = Path(section["checkpoint_path"]).resolve()
+        if not checkpoint_path.is_file() or digest(checkpoint_path) != section["checkpoint_sha256"]:
+            raise ValueError(f"H assessment {name} checkpoint is hash-mismatched")
+        if section["training_membership_sha256"] != training_membership:
+            raise ValueError(f"H assessment {name} did not use the frozen R membership")
+        section["checkpoint_path"] = str(checkpoint_path)
+    if challenger["model_role"] != "challenger" or control["model_role"] != "matched_r_control":
+        raise ValueError("H assessment model roles are invalid")
+    report = record.get("report", {})
+    if (
+        challenger["source_sha256"] != record.get("source_sha256")
+        or challenger["config_sha256"] != record.get("config_sha256")
+        or challenger["checkpoint_sha256"] != report.get("checkpoint_sha256")
+    ):
+        raise ValueError("Challenger contract does not match the calibrated execution")
+    if challenger["run_id"] == control["run_id"]:
+        raise ValueError("Matched control must be an independent frozen execution")
+    frozen = {
+        "schema_version": 1,
+        "assessment_membership_sha256": h_membership,
+        "training_membership_sha256": training_membership,
+        "annotation_sha256": record["dataset"]["annotation_sha256"],
+        "source_sha256": record["source_sha256"],
+        "config_sha256": record["config_sha256"],
+        "calibration_sha256": record["calibration_sha256"],
+        "calibrator_sha256": calibration["calibrator_sha256"],
+        "assembly_sha256": canonical_digest(calibration["assembly"]),
+        "challenger": challenger,
+        "matched_control": control,
+        "input_sha256": digest(contract_path),
+    }
+    frozen["sha256"] = canonical_digest(frozen)
+    record.update(status="assessment_frozen", assessment_contract=frozen)
+    write_json(record_path, record)
+    return record
+
+
+def _site_comparison(
+    challenger_files: Mapping[str, Mapping[str, Any]],
+    control_files: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    sites = sorted({Path(filename).stem[-2:] for filename in challenger_files})
+    comparison = {}
+    safe = True
+    for site in sites:
+        names = [name for name in challenger_files if Path(name).stem.endswith(site)]
+        challenger = _summed_metrics({name: challenger_files[name] for name in names})
+        control = _summed_metrics({name: control_files[name] for name in names})
+        delta = challenger["pq"] - control["pq"]
+        collapsed = control["tp"] > 0 and challenger["tp"] == 0
+        catastrophic = collapsed or delta < -0.10
+        safe = safe and not catastrophic
+        comparison[site] = {
+            "challenger": challenger,
+            "matched_control": control,
+            "pq_delta": delta,
+            "catastrophic": catastrophic,
+        }
+    return comparison, safe
+
+
+def _load_prediction_artifact(path: Path, expected_names: set[str]) -> dict[str, list[Any]]:
+    """Decode a complete, evaluator-ready final-mask artifact."""
+    artifact = json.loads(path.read_text())
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("schema_version") != 1
+        or not isinstance(artifact.get("predictions"), dict)
+        or set(artifact["predictions"]) != expected_names
+    ):
+        raise ValueError("Matched-control prediction artifact coverage or schema is invalid")
+    predictions = {}
+    for filename, rows in artifact["predictions"].items():
+        if not isinstance(rows, list):
+            raise ValueError("Matched-control prediction rows must be lists")
+        predictions[filename] = [core.decode_rle(row) for row in rows]
+    return predictions
+
+
+def record_frozen_h_assessment(
+    record: dict[str, Any],
+    record_path: Path,
+    bundle_path: Path,
+    *,
+    annotation_path: Path | None = None,
+) -> dict[str, Any]:
+    """Verify immutable artifacts and recompute H evidence before storing it."""
+    if record.get("status") != "assessment_frozen":
+        raise ValueError("H assessment requires a frozen assessment contract")
+    contract = record.get("assessment_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("Frozen H assessment contract is absent")
+    contract_sha256 = contract.get("sha256")
+    unsigned_contract = {key: value for key, value in contract.items() if key != "sha256"}
+    if contract_sha256 != canonical_digest(unsigned_contract):
+        raise ValueError("Frozen H assessment contract seal is invalid")
+    bundle_path = Path(bundle_path)
+    if not bundle_path.is_file():
+        raise ValueError("Frozen H assessment bundle is missing")
+    bundle = json.loads(bundle_path.read_text())
+    required = {"challenger", "matched_control", "assessment_membership_sha256"}
+    if not isinstance(bundle, dict) or not required <= set(bundle):
         raise ValueError("Frozen H assessment evidence is incomplete")
     h_membership = canonical_digest(sorted(record["split"]["members"]["assessment"]))
-    if evidence.get("assessment_membership_sha256") != h_membership:
+    if bundle.get("assessment_membership_sha256") != h_membership:
         raise ValueError("Frozen H assessment membership hash is invalid")
+    if bundle.get("assessment_contract_sha256") != contract_sha256:
+        raise ValueError("Assessment bundle differs from the frozen contract")
+    calibration, _ = _verified_calibration(record)
+    challenger_report_path, _ = _artifact_path_and_hash(bundle["challenger"], "report")
+    challenger_candidates_path, candidates_sha256 = _artifact_path_and_hash(
+        bundle["challenger"], "candidates"
+    )
+    challenger_checkpoint_path, checkpoint_sha256 = _artifact_path_and_hash(
+        bundle["challenger"], "checkpoint"
+    )
+    control_report_path, _ = _artifact_path_and_hash(bundle["matched_control"], "report")
+    control_predictions_path, control_predictions_sha256 = _artifact_path_and_hash(
+        bundle["matched_control"], "predictions"
+    )
+    control_checkpoint_path, control_checkpoint_sha256 = _artifact_path_and_hash(
+        bundle["matched_control"], "checkpoint"
+    )
+    for name, path, sha256 in (
+        ("challenger", challenger_checkpoint_path, checkpoint_sha256),
+        ("matched_control", control_checkpoint_path, control_checkpoint_sha256),
+    ):
+        expected = contract[name]
+        if str(path) != expected["checkpoint_path"] or sha256 != expected["checkpoint_sha256"]:
+            raise ValueError(f"Assessment {name} checkpoint differs from the frozen contract")
+    challenger_report = json.loads(challenger_report_path.read_text())
+    control_report = json.loads(control_report_path.read_text())
+    for name, report, checkpoint in (
+        ("challenger", challenger_report, checkpoint_sha256),
+        ("matched_control", control_report, control_checkpoint_sha256),
+    ):
+        expected = contract[name]
+        if (
+            report.get("status") != "complete"
+            or report.get("run_id") != expected["run_id"]
+            or report.get("model_role") != expected["model_role"]
+            or report.get("assessment_membership_sha256") != h_membership
+            or report.get("training_membership_sha256") != contract["training_membership_sha256"]
+            or report.get("source_sha256") != expected["source_sha256"]
+            or report.get("config_sha256") != expected["config_sha256"]
+            or report.get("checkpoint_sha256") != checkpoint
+        ):
+            raise ValueError("Assessment report provenance is invalid")
+    if challenger_report.get("candidates_sha256") != candidates_sha256:
+        raise ValueError("Challenger report does not bind its candidate artifact")
+    if control_report.get("predictions_sha256") != control_predictions_sha256:
+        raise ValueError("Matched-control report does not bind its prediction artifact")
+    rows = json.loads(challenger_candidates_path.read_text())
+    h_names = set(record["split"]["members"]["assessment"])
+    if set(rows) != h_names:
+        raise ValueError("Challenger H candidate coverage is incomplete")
+    candidates = {
+        name: [core.deserialize_candidate(row) for row in value] for name, value in rows.items()
+    }
+    annotation_path = annotation_path or (
+        ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    )
+    if digest(annotation_path) != record.get("dataset", {}).get("annotation_sha256"):
+        raise ValueError("Assessment annotation source hash is invalid")
+    index = data.load_annotation_index(annotation_path, h_names)
+    truths = {
+        name: [
+            list(data.rasterize_record(item, native_size=2048, output_size=2048))
+            for item in index.records_by_file[name]
+        ]
+        for name in h_names
+    }
+    calibrator = core.Calibrator.from_dict(calibration["calibrator"])
+    recipe = AssemblyConfig(**calibration["assembly"])
+    predictions = {
+        name: core.assemble_instances(candidates[name], recipe=recipe, calibrator=calibrator)
+        for name in h_names
+    }
+    challenger_metrics = core.evaluate_run(predictions, truths)
+    diagnostics = core.candidate_diagnostics(candidates, truths, final_predictions=predictions)
+    parity_error = _metric_difference(challenger_metrics, challenger_report.get("inference", {}))
+    if parity_error > 1e-8:
+        raise ValueError("Challenger H evaluator metrics do not independently reproduce")
+    challenger_files = {name: _stats(challenger_metrics["files"][name]) for name in sorted(h_names)}
+    control_predictions = _load_prediction_artifact(control_predictions_path, h_names)
+    control_evaluation = core.evaluate_run(control_predictions, truths)
+    if _metric_difference(control_evaluation, control_report.get("inference", {})) > 1e-8:
+        raise ValueError("Matched-control H evaluator metrics do not independently reproduce")
+    control_files = {name: _stats(control_evaluation["files"][name]) for name in sorted(h_names)}
+    control_metrics = _metrics_from_stats(control_evaluation)
+    bootstrap = core.paired_block_bootstrap(
+        challenger_files,
+        control_files,
+        blocks=record["split"]["assessment_blocks"],
+        replicates=2_000,
+    )
+    site_metrics, site_safe = _site_comparison(challenger_files, control_files)
+    challenger_summary = _metrics_from_stats(challenger_metrics)
+    rq_delta = challenger_summary["rq"] - control_metrics["rq"]
+    sq_delta = challenger_summary["sq"] - control_metrics["sq"]
+    assessment = {
+        "schema_version": 1,
+        "verified": True,
+        "assessment_contract_sha256": contract_sha256,
+        "assessment_membership_sha256": h_membership,
+        "bundle_path": str(bundle_path.resolve()),
+        "bundle_sha256": digest(bundle_path),
+        "challenger": {**contract["challenger"], "metrics": challenger_summary},
+        "matched_control": {**contract["matched_control"], "metrics": control_metrics},
+        "diagnostics": diagnostics,
+        "bootstrap": bootstrap,
+        "rq_delta": rq_delta,
+        "sq_delta": sq_delta,
+        "evaluator_parity_error": parity_error,
+        "site_metrics": site_metrics,
+        "no_catastrophic_site_regression": site_safe,
+    }
+    assessment["sha256"] = canonical_digest(assessment)
     record.update(
         status="assessment_complete",
-        assessment=evidence,
+        assessment=assessment,
         assessment_completed_at=datetime.now(UTC).isoformat(),
     )
     write_json(record_path, record)
@@ -668,9 +1011,20 @@ def record_controller_failure(record: dict[str, Any], record_path: Path, error: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=("prepare", "run", "status", "calibrate", "assess", "gate")
+        "command",
+        choices=(
+            "prepare",
+            "run",
+            "status",
+            "calibrate",
+            "freeze-assessment",
+            "assess",
+            "gate",
+        ),
     )
-    parser.add_argument("--evidence", type=Path, help="Frozen H assessment or promotion-gate JSON")
+    parser.add_argument(
+        "--evidence", type=Path, help="Frozen assessment contract or H artifact-bundle JSON"
+    )
     parser.add_argument(
         "--input-size",
         type=int,
@@ -706,16 +1060,18 @@ def main() -> None:
             )
         )
         return
-    if arguments.command in {"assess", "gate"}:
-        if not RECORD.is_file() or arguments.evidence is None:
-            raise RuntimeError("Assessment/gate needs an active record and --evidence JSON")
-        evidence = json.loads(arguments.evidence.read_text())
+    if arguments.command in {"freeze-assessment", "assess", "gate"}:
+        if not RECORD.is_file():
+            raise RuntimeError("Assessment/gate needs an active record")
+        if arguments.command != "gate" and arguments.evidence is None:
+            raise RuntimeError("Assessment freezing/verification requires --evidence JSON")
         record = json.loads(RECORD.read_text())
-        result = (
-            record_frozen_h_assessment(record, RECORD, evidence)
-            if arguments.command == "assess"
-            else record_promotion_gate(record, RECORD, evidence)
-        )
+        if arguments.command == "freeze-assessment":
+            result = freeze_h_assessment_contract(record, RECORD, arguments.evidence)
+        elif arguments.command == "assess":
+            result = record_frozen_h_assessment(record, RECORD, arguments.evidence)
+        else:
+            result = record_promotion_gate(record, RECORD)
         print(json.dumps(result, indent=2))
         return
 

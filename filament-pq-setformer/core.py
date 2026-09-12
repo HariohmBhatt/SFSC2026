@@ -735,6 +735,7 @@ def candidate_diagnostics(
     if final_predictions is not None and set(final_predictions) != set(truths_by_file):
         raise ValueError("Final diagnostic coverage differs from truth coverage")
     raw_recalled = raw_total = final_recalled = final_total = fragments = merges = 0
+    count_error = 0
     for filename in sorted(truths_by_file):
         raw, total, raw_fragments, raw_merges = _recall_at_match_threshold(
             [candidate.mask for candidate in candidates_by_file[filename]], truths_by_file[filename]
@@ -749,6 +750,10 @@ def candidate_diagnostics(
             )
             final_recalled += recalled
             final_total += count
+            count_error += sum(
+                abs(len(final_predictions[filename]) - len(record))
+                for record in truths_by_file[filename]
+            )
     result: dict[str, Any] = {
         "raw_candidate_recall": raw_recalled / raw_total if raw_total else 0.0,
         "raw_candidate_recalled": raw_recalled,
@@ -757,6 +762,7 @@ def candidate_diagnostics(
         "ownership_damaged_matches": int(ownership_damaged_matches),
         "fragmentation": fragments,
         "merges": merges,
+        "instance_count_absolute_error": count_error,
     }
     if final_predictions is not None:
         result.update(

@@ -75,6 +75,21 @@ def test_training_account_guard_rejects_primary_kaggle_credentials(tmp_path) -> 
         runner.assert_training_account(record, "- username: hariohmbhatt\n")
 
 
+def test_controller_cli_uses_the_isolated_kaggle2_credentials(monkeypatch) -> None:
+    seen = {}
+
+    def check_output(command, **kwargs):
+        seen.update(command=command, environment=kwargs["env"])
+        return "- username: hariohmhemantbhatt\n"
+
+    monkeypatch.setattr(runner.subprocess, "check_output", check_output)
+
+    assert runner._cli("config", "view") == "- username: hariohmhemantbhatt\n"
+    assert seen["command"] == ["kaggle", "config", "view"]
+    assert seen["environment"]["KAGGLE_CONFIG_DIR"] == str(runner.KAGGLE2_CONFIG)
+    assert seen["environment"]["HOME"] == str(runner.KAGGLE2_HOME)
+
+
 def test_prepare_freezes_selected_preflight_input_size(tmp_path) -> None:
     record = runner.prepare(
         record_path=tmp_path / "record.json",

@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import time
@@ -30,6 +31,8 @@ HERE = Path(__file__).resolve().parent
 RECORD = ROOT / "reports/pq_setformer_run.json"
 OWNER = "hariohmhemantbhatt"
 PRIVATE_DATASET_SOURCE = "hariohmhemantbhatt/sfsc2026-private-data"
+KAGGLE2_HOME = Path.home() / ".kaggle-2"
+KAGGLE2_CONFIG = KAGGLE2_HOME / ".kaggle"
 TERMINAL_STATUSES = {
     # The two legacy statuses are accepted only to preserve historical evidence.
     "smoke_complete",
@@ -86,8 +89,14 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def _cli(*args: str, timeout: int = 300) -> str:
+    environment = dict(os.environ)
+    environment.update(KAGGLE_CONFIG_DIR=str(KAGGLE2_CONFIG), HOME=str(KAGGLE2_HOME))
     return subprocess.check_output(
-        ["kaggle", *args], text=True, stderr=subprocess.STDOUT, timeout=timeout
+        ["kaggle", *args],
+        text=True,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        env=environment,
     )
 
 

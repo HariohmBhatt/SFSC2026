@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
+import zlib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -25,7 +27,7 @@ def _finite(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def _valid_candidate(row: Any) -> bool:
+def _valid_candidate(row: Any, *, filename: str | None = None) -> bool:
     if not isinstance(row, Mapping):
         return False
     if not isinstance(row.get("query_id"), str) or not row["query_id"]:
@@ -51,18 +53,59 @@ def _valid_candidate(row: Any) -> bool:
     version = row.get("schema_version", 1)
     if version == 1:
         return True
-    if version != 2 or not isinstance(row.get("source"), str) or not row["source"]:
+    if (
+        version != 2
+        or not isinstance(row.get("source"), str)
+        or not row["source"]
+        or row.get("filename") != filename
+        or not isinstance(row.get("checkpoint_sha256"), str)
+        or len(row["checkpoint_sha256"]) != 64
+    ):
         return False
     if not _finite(row.get("presence_logit")):
         return False
     codec = row.get("probability_codec")
     shape = row.get("probability_shape")
-    return (
+    native_shape = row.get("probability_native_shape")
+    if not (
         codec == "q8-zlib-v1"
         and isinstance(shape, list)
         and len(shape) == 2
-        and all(isinstance(value, int) and value > 0 for value in shape)
+        and all(isinstance(value, int) and 0 < value <= 256 for value in shape)
+        and native_shape == [2048, 2048]
         and isinstance(row.get("probability_payload"), str)
+        and isinstance(row.get("probability_payload_sha256"), str)
+    ):
+        return False
+    try:
+        probability = zlib.decompress(base64.b64decode(row["probability_payload"], validate=True))
+    except (ValueError, zlib.error):
+        return False
+    if (
+        len(probability) != math.prod(shape)
+        or hashlib.sha256(probability).hexdigest() != row["probability_payload_sha256"]
+    ):
+        return False
+    bbox = row.get("bbox_xyxy")
+    if (
+        not isinstance(bbox, list)
+        or len(bbox) != 4
+        or not all(isinstance(value, int) for value in bbox)
+    ):
+        return False
+    if any(
+        not _finite(row.get(name))
+        for name in ("maximum_iou_with_stronger_query", "maximum_containment_with_stronger_query")
+    ):
+        return False
+    declared = row.get("row_sha256")
+    material = dict(row)
+    material.pop("row_sha256", None)
+    return (
+        declared
+        == hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
     )
 
 
@@ -144,8 +187,8 @@ def audit_stage(
                 not isinstance(rows, list)
                 or len({row.get("query_id") for row in rows if isinstance(row, Mapping)})
                 != len(rows)
-                or any(not _valid_candidate(row) for row in rows)
-                for rows in cache.values()
+                or any(not _valid_candidate(row, filename=filename) for row in rows)
+                for filename, rows in cache.items()
             ):
                 issues.append("candidate cache contains an invalid query or RLE")
         except (json.JSONDecodeError, AttributeError):

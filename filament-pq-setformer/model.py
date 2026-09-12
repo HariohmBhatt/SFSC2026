@@ -216,15 +216,27 @@ class PQSetFormer(nn.Module):
 
     def train_batch(self, images: Sequence[Mapping[str, Any]]) -> dict[str, torch.Tensor]:
         self.train()
-        losses = self.base(list(images))
-        if self.experiment.loss.quality <= 0:
-            return losses
-        if not isinstance(losses, Mapping) or "loss_quality" not in losses:
-            raise QualityContractError(
-                "Pinned MaskDINO must expose detached matched-query conditional-IoU loss as "
-                "loss_quality; refusing the old mask-confidence proxy"
+        tensors = [item["image"].to(self.device, non_blocking=True) for item in images]
+        normalized = [(tensor - self.base.pixel_mean) / self.base.pixel_std for tensor in tensors]
+        batch = ImageList.from_tensors(normalized, self.base.size_divisibility)
+        instances = [item["instances"].to(self.device) for item in images]
+        if "detr" not in self.base.data_loader:
+            raise QualityContractError("PQSetFormer requires the declared Detectron2 DETR mapper")
+        targets = self.base.prepare_targets_detr(instances, batch)
+        outputs, mask_dict = self.base.sem_seg_head(
+            self.base.backbone(batch.tensor), targets=targets
+        )
+        losses = self.base.criterion(outputs, targets, mask_dict)
+        for name in list(losses):
+            if name in self.base.criterion.weight_dict:
+                losses[name] *= self.base.criterion.weight_dict[name]
+            else:
+                losses.pop(name)
+        if self.experiment.loss.quality > 0:
+            losses["loss_quality"] = (
+                self._conditional_iou_loss(outputs, targets) * self.experiment.loss.quality
             )
-        return dict(losses)
+        return losses
 
     def conditional_iou_logits(
         self, query_features: torch.Tensor, mask_logits: torch.Tensor, pixel_features: torch.Tensor
@@ -242,6 +254,43 @@ class PQSetFormer(nn.Module):
         denominator = weights.sum(dim=(-1, -2), keepdim=True).clamp_min(1e-6)
         pooled = torch.einsum("bqhw,bchw->bqc", weights / denominator, pixel_features)
         return self.conditional_iou_head(torch.cat((query_features, pooled), dim=-1)).squeeze(-1)
+
+    def _conditional_iou_loss(
+        self, outputs: Mapping[str, torch.Tensor], targets: Sequence[Mapping[str, torch.Tensor]]
+    ) -> torch.Tensor:
+        """Supervise only Hungarian-matched queries with detached realized IoU."""
+        try:
+            query_features = outputs["pred_query_features"]
+            pixel_features = outputs["pixel_features"]
+        except KeyError as error:
+            raise QualityContractError(
+                "Missing PQ MaskDINO quality adapter outputs; apply the pinned vendor patch"
+            ) from error
+        quality_logits = self.conditional_iou_logits(
+            query_features, outputs["pred_masks"], pixel_features
+        )
+        matched = self.base.criterion.matcher(outputs, targets)
+        values = []
+        for batch_index, (query_indices, target_indices) in enumerate(matched):
+            if not len(query_indices):
+                continue
+            prediction = outputs["pred_masks"][batch_index, query_indices]
+            truth = targets[batch_index]["masks"][target_indices].float()
+            truth = F.interpolate(truth[:, None], size=prediction.shape[-2:], mode="nearest")[:, 0]
+            predicted_binary = prediction.sigmoid().detach() >= 0.5
+            target_binary = truth.detach() >= 0.5
+            intersection = (predicted_binary & target_binary).flatten(1).sum(1)
+            union = (predicted_binary | target_binary).flatten(1).sum(1).clamp_min(1)
+            realized_iou = (intersection / union).detach().to(quality_logits.dtype)
+            values.append(
+                F.binary_cross_entropy_with_logits(
+                    quality_logits[batch_index, query_indices], realized_iou
+                )
+            )
+        if not values:
+            # Preserve a finite connected scalar for empty-target microbatches.
+            return quality_logits.sum() * 0
+        return torch.stack(values).mean()
 
     @torch.no_grad()
     def predict(
@@ -265,12 +314,14 @@ class PQSetFormer(nn.Module):
         output, _ = self.base.sem_seg_head(features)
         presence = output["pred_logits"].sigmoid()[..., 0]
         mask_logits = output["pred_masks"]
-        if "pred_conditional_iou" not in output:
+        try:
+            conditional_iou = self.conditional_iou_logits(
+                output["pred_query_features"], mask_logits, output["pixel_features"]
+            ).sigmoid()
+        except KeyError as error:
             raise QualityContractError(
-                "Pinned MaskDINO inference lacks pred_conditional_iou; "
-                "E2 candidates cannot use a proxy"
-            )
-        conditional_iou = output["pred_conditional_iou"].sigmoid()
+                "Missing PQ MaskDINO quality adapter outputs; apply the pinned vendor patch"
+            ) from error
         results: list[list[dict[str, Any]]] = []
         for batch_index, (height, width) in enumerate(native_shapes):
             keep = torch.where(presence[batch_index] >= presence_floor)[0]

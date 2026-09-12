@@ -184,6 +184,7 @@ def test_candidate_cache_round_trip_keeps_probabilities_and_provenance_bounded()
     assert restored.source == "seed-1/identity"
     assert restored.presence_logit == pytest.approx(1.386294)
     assert np.allclose(restored.mask_probability, probability, atol=1 / 255 + 1e-6)
+    assert core.candidate_features([restored])[0, 0] == pytest.approx(1.386294)
 
 
 def test_mask_threshold_changes_owned_pixels_using_real_probability() -> None:

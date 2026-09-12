@@ -169,6 +169,18 @@ def _loss_metrics(losses: dict[str, torch.Tensor]) -> dict[str, float]:
     return result
 
 
+def optimizer_learning_rates(optimizer: torch.optim.Optimizer) -> dict[str, float]:
+    """Report named optimizer buckets without depending on group ordering."""
+    values = {str(group["name"]): float(group["lr"]) for group in optimizer.param_groups}
+    decoder = [value for name, value in values.items() if name.startswith("decoder-")]
+    backbone = [value for name, value in values.items() if name.startswith("backbone-")]
+    if not decoder or not backbone or len(set(decoder)) != 1 or len(set(backbone)) != 1:
+        raise RuntimeError(
+            "Optimizer groups do not expose one decoder and one backbone learning rate"
+        )
+    return {"optim/lr_decoder": decoder[0], "optim/lr_backbone": backbone[0]}
+
+
 def train_smoke(
     network: model_module.PQSetFormer,
     loader: DataLoader,
@@ -269,8 +281,7 @@ def train_smoke(
         metrics = {
             **_loss_metrics(losses),
             "train/loss_total": scalar_loss,
-            "optim/lr_decoder": optimizer.param_groups[0]["lr"],
-            "optim/lr_backbone": optimizer.param_groups[1]["lr"],
+            **optimizer_learning_rates(optimizer),
             "optim/grad_norm": float(grad_norm),
             "amp/enabled": experiment.training.amp,
             "amp/scale": float(scaler.get_scale()),
@@ -325,6 +336,7 @@ def infer_smoke(
     image_directory: Path,
     names: list[str],
     experiment: ExperimentConfig,
+    checkpoint_sha256: str,
 ) -> tuple[dict, dict]:
     cache = {}
     total_tp = 0
@@ -371,13 +383,23 @@ def infer_smoke(
         total_fn += metrics["fn"]
         total_iou += metrics["sum_iou"]
         per_file[filename] = metrics["files"][filename]
-        cache[filename] = [
+        rows = [
             core.serialize_candidate(
                 candidate,
                 maximum_probability_bytes=experiment.model.candidate_probability_cache_bytes,
             )
             for candidate in candidates
         ]
+        for row, overlap in zip(rows, core.candidate_overlap_summaries(candidates), strict=True):
+            row.update(
+                filename=filename,
+                checkpoint_sha256=checkpoint_sha256,
+                **overlap,
+            )
+            row["row_sha256"] = hashlib.sha256(
+                json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        cache[filename] = rows
         del item, raw, candidates, masks, records
     if not any(cache.values()):
         raise RuntimeError("Stage inference collapsed to an all-empty candidate set")
@@ -513,6 +535,7 @@ def main() -> None:
             training_root / "train_images",
             TASK["inference_names"],
             experiment,
+            digest(checkpoint),
         )
         cache_path = WORK / f"{run_kind}-candidates.json"
         write_json(cache_path, cache)

@@ -56,6 +56,23 @@ fits the versioned logistic calibrator on Q-fit, selects a declared recipe on
 Q-cal, and records both membership and candidate hashes. H is a separate,
 one-shot assessment after that recipe has been frozen.
 
+After downloaded pilot artifacts verify as `execution_complete`, run the local,
+H-inaccessible calibration stage:
+
+```bash
+uv run python filament-pq-setformer/run.py calibrate
+```
+
+It writes a hashed `q-calibration.json` alongside the immutable stage directory.
+The separate one-shot H runner must write its matched-control evidence to a JSON
+file whose H membership hash is exact; only then can the controller record the
+assessment and gate it:
+
+```bash
+uv run python filament-pq-setformer/run.py assess --evidence /path/to/h-evidence.json
+uv run python filament-pq-setformer/run.py gate --evidence /path/to/gate-evidence.json
+```
+
 `prepare` freezes the exact source, configuration, and image membership under
 `outputs/pq-setformer-<timestamp>/` and writes the active record to
 `reports/pq_setformer_run.json`. `run` packages that snapshot, installs the
@@ -127,4 +144,6 @@ would exceed its declared bound. Version-1 candidates remain auditable only and
 cannot be calibrated or assembled under E3, because their ownership logits were
 discarded. The old checkpoint cannot be loaded into E2 because it has no
 conditional-IoU-head weights and the pinned MaskDINO output must be patched to
-provide its documented contract (`loss_quality` and `pred_conditional_iou`).
+provide final query and pixel-decoder features. The wrapper computes the
+matched-query `loss_quality` and candidate conditional-IoU logits from that
+explicit contract.

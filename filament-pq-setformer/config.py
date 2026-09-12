@@ -172,7 +172,7 @@ class LoggingConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    version: str = "pq-setformer-v1"
+    version: str = "pq-setformer-v2"
     model: ModelConfig = ModelConfig()
     loss: LossConfig = LossConfig()
     training: TrainingConfig = TrainingConfig()

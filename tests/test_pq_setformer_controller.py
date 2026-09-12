@@ -155,6 +155,15 @@ def test_kernel_bootstrap_patches_maskdino_legacy_torch_dispatch(tmp_path) -> No
     )
 
 
+def test_kernel_bootstrap_compiles_with_the_pinned_e2_quality_adapter() -> None:
+    lock = json.loads((HERE / "vendor-lock.json").read_text())
+
+    launcher = runner._bootstrap("eJyrVkrLz1eyUkpKLFKqBQAQ5gQF", lock)
+
+    compile(launcher, "launcher", "exec")
+    assert "PQ-SetFormer E2 adapter" in launcher
+
+
 def test_build_rejects_a_mutated_frozen_snapshot(tmp_path) -> None:
     record = runner.prepare(
         record_path=tmp_path / "record.json",
@@ -198,22 +207,43 @@ def test_gate_decision_requires_matched_control_and_never_promotes_execution_alo
     tmp_path,
 ) -> None:
     record_path = tmp_path / "record.json"
-    record = {"status": "execution_complete", "run_id": "run-1"}
+    missing_control = {"pq_delta": 0.1}
+    record = {"status": "assessment_complete", "run_id": "run-1", "assessment": missing_control}
 
-    failed = runner.record_promotion_gate(record, record_path, {"pq_delta": 0.1})
+    failed = runner.record_promotion_gate(record, record_path, missing_control)
 
     assert failed["status"] == "gate_failed"
     assert "matched control" in failed["gate_failure_reason"]
+    success = {
+        "matched_control": {"run_id": "control"},
+        "diagnostics": {"raw_candidate_recall": 0.8, "final_recall": 0.7},
+        "bootstrap": {"pq_delta": 0.02, "bootstrap_lower_95": 0.001},
+        "rq_delta": 0.01,
+        "sq_delta": 0.0,
+    }
     promoted = runner.record_promotion_gate(
-        {"status": "execution_complete", "run_id": "run-2"},
+        {"status": "assessment_complete", "run_id": "run-2", "assessment": success},
         record_path,
-        {
-            "matched_control": {"run_id": "control"},
-            "diagnostics": {"raw_candidate_recall": 0.8, "final_recall": 0.7},
-            "bootstrap": {"pq_delta": 0.02, "bootstrap_lower_95": 0.001},
-            "rq_delta": 0.01,
-            "sq_delta": 0.0,
-        },
+        success,
     )
 
     assert promoted["status"] == "promoted"
+
+
+def test_h_assessment_requires_frozen_calibration_and_exact_h_membership(tmp_path) -> None:
+    record_path = tmp_path / "record.json"
+    record = {
+        "status": "calibration_complete",
+        "split": {"members": {"assessment": ["20110101000000Bh.jpeg"]}},
+    }
+    evidence = {
+        "challenger": {},
+        "matched_control": {},
+        "diagnostics": {},
+        "bootstrap": {},
+        "assessment_membership_sha256": runner.canonical_digest(["20110101000000Bh.jpeg"]),
+    }
+
+    result = runner.record_frozen_h_assessment(record, record_path, evidence)
+
+    assert result["status"] == "assessment_complete"

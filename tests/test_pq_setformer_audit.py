@@ -187,3 +187,25 @@ def test_audit_rejects_candidate_schema_or_count_mismatch(tmp_path) -> None:
 
     assert "candidate-cache counts do not match the report" in issues
     assert "candidate cache contains an invalid query or RLE" in issues
+
+
+def test_audit_rejects_unassemblable_v2_probability_payload(tmp_path) -> None:
+    report, checkpoint, candidates, logs = valid_artifacts(tmp_path)
+    payload = json.loads(candidates.read_text())
+    row = payload["image.jpeg"][0]
+    row.update(
+        schema_version=2,
+        source="identity",
+        presence_logit=1.0,
+        probability_codec="q8-zlib-v1",
+        probability_shape=[1, 1],
+        probability_native_shape=[2048, 2048],
+        probability_payload="not-base64",
+        probability_payload_sha256="0" * 64,
+    )
+    candidates.write_text(json.dumps(payload))
+    report["candidates_sha256"] = digest(candidates)
+
+    assert "candidate cache contains an invalid query or RLE" in audit.audit_smoke(
+        report, checkpoint, candidates, logs
+    )

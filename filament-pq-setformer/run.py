@@ -13,7 +13,7 @@ import re
 import subprocess
 import time
 import zlib
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,8 @@ TERMINAL_STATUSES = {
     "smoke_complete",
     "pilot_complete",
     "execution_complete",
+    "calibration_complete",
+    "assessment_complete",
     "gate_failed",
     "promoted",
     "failed",
@@ -257,6 +259,30 @@ command(sys.executable, "-m", "pip", "install", "--quiet", "--no-build-isolation
 vendor = Path("/kaggle/working/vendor")
 command("git", "clone", "--quiet", "https://github.com/IDEA-Research/MaskDINO.git", str(vendor))
 command("git", "checkout", "--quiet", "{maskdino}", cwd=vendor)
+decoder = vendor / "maskdino/modeling/transformer_decoder/maskdino_decoder.py"
+decoder_source = decoder.read_text()
+quality_anchor = "        out = {{\\n            'pred_logits': predictions_class[-1],"
+quality_replacement = (
+    "        # PQ-SetFormer E2 adapter: final matching-query features and\\n"
+    "        # stride-4 pixel features stay behind the upstream decoder interface.\\n"
+    "        pq_query_features = hs[-1].transpose(0, 1)\\n"
+    "        if mask_dict is not None:\\n"
+    "            pq_query_features = pq_query_features[:, mask_dict['pad_size']:, :]\\n"
+    "        out = {{\\n"
+    "            'pred_logits': predictions_class[-1],"
+)
+if decoder_source.count(quality_anchor) != 1:
+    raise RuntimeError("Pinned MaskDINO decoder quality adapter anchor changed unexpectedly")
+decoder_source = decoder_source.replace(quality_anchor, quality_replacement)
+quality_fields = "            'pred_boxes':out_boxes[-1],"
+quality_fields_replacement = (
+    "            'pred_boxes':out_boxes[-1],\\n"
+    "            'pred_query_features': pq_query_features,\\n"
+    "            'pixel_features': mask_features,"
+)
+if decoder_source.count(quality_fields) != 1:
+    raise RuntimeError("Pinned MaskDINO decoder quality output anchor changed unexpectedly")
+decoder.write_text(decoder_source.replace(quality_fields, quality_fields_replacement))
 ops = vendor / "maskdino/modeling/pixel_decoder/ops"
 dispatch = ops / "src/cuda/ms_deform_attn_cuda.cu"
 dispatch_source = dispatch.read_text()
@@ -487,8 +513,10 @@ def record_promotion_gate(
     cannot launch a stage and an incomplete evidence packet is durable failure,
     not an invitation to tune on H.
     """
-    if record.get("status") != "execution_complete":
-        raise ValueError("Only an execution_complete stage can enter the promotion gate")
+    if record.get("status") != "assessment_complete":
+        raise ValueError("Only a frozen H assessment can enter the promotion gate")
+    if evidence != record.get("assessment"):
+        raise ValueError("Promotion gate evidence must be the immutable recorded H assessment")
     diagnostics = evidence.get("diagnostics")
     bootstrap = evidence.get("bootstrap")
     reason = None
@@ -519,6 +547,102 @@ def record_promotion_gate(
     return record
 
 
+def record_frozen_h_assessment(
+    record: dict[str, Any], record_path: Path, evidence: dict[str, Any]
+) -> dict[str, Any]:
+    """Attach downloaded one-shot H evidence only after Q calibration freezes."""
+    if record.get("status") != "calibration_complete":
+        raise ValueError("H assessment requires a completed frozen Q calibration")
+    required = {"challenger", "matched_control", "diagnostics", "bootstrap"}
+    if not required <= set(evidence):
+        raise ValueError("Frozen H assessment evidence is incomplete")
+    h_membership = canonical_digest(sorted(record["split"]["members"]["assessment"]))
+    if evidence.get("assessment_membership_sha256") != h_membership:
+        raise ValueError("Frozen H assessment membership hash is invalid")
+    record.update(
+        status="assessment_complete",
+        assessment=evidence,
+        assessment_completed_at=datetime.now(UTC).isoformat(),
+    )
+    write_json(record_path, record)
+    return record
+
+
+def calibrate_q_artifacts(record: dict[str, Any], *, record_path: Path) -> dict[str, Any]:
+    """Fit Q-fit and choose Q-cal only; H is structurally unavailable here."""
+    if record.get("status") != "execution_complete":
+        raise ValueError("Only execution_complete Q inference can be calibrated")
+    if record.get("run_kind") != "pilot":
+        raise ValueError("Only a frozen pilot has Q-fit/Q-cal memberships")
+    split = record["split"]["members"]
+    q_fit_names = set(split["quality_fit"])
+    q_cal_names = set(split["quality_calibration"])
+    if q_fit_names & q_cal_names or not q_fit_names or not q_cal_names:
+        raise ValueError("Frozen Q-fit/Q-cal membership is invalid")
+    report = record.get("report")
+    if not isinstance(report, dict):
+        raise ValueError("Downloaded execution report is required before calibration")
+    cache_path = _find_unique(Path(record["directory"]) / "results", "pilot-candidates.json")
+    if digest(cache_path) != report.get("candidates_sha256"):
+        raise ValueError("Q candidate cache hash does not match verified execution report")
+    raw_cache = json.loads(cache_path.read_text())
+    if set(raw_cache) != q_fit_names | q_cal_names:
+        raise ValueError("Q candidate cache coverage differs from frozen Q membership")
+    candidates = {
+        filename: [core.deserialize_candidate(row) for row in rows]
+        for filename, rows in raw_cache.items()
+    }
+    annotation = ROOT / "SFSCDataset/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    index = data.load_annotation_index(annotation, q_fit_names | q_cal_names)
+    truths = {
+        filename: [
+            list(data.rasterize_record(row, native_size=2048, output_size=2048))
+            for row in index.records_by_file[filename]
+        ]
+        for filename in candidates
+    }
+    experiment = ExperimentConfig.from_dict(record["experiment"])
+    recipes = [
+        replace(
+            experiment.assembly,
+            mask_threshold=threshold,
+            utility_threshold=utility,
+            minimum_area=minimum_area,
+        )
+        for threshold in (0.4, 0.5, 0.6)
+        for utility in (0.1, 0.2, 0.3)
+        for minimum_area in (0, 32, 64, 96)
+    ]
+    calibrator, recipe, selection = core.fit_and_select_q_recipe(
+        {name: candidates[name] for name in q_fit_names},
+        {name: truths[name] for name in q_fit_names},
+        {name: candidates[name] for name in q_cal_names},
+        {name: truths[name] for name in q_cal_names},
+        recipes,
+    )
+    artifact = {
+        "schema_version": 1,
+        "kind": "q-fit-q-cal-only",
+        "source_sha256": record["source_sha256"],
+        "config_sha256": record["config_sha256"],
+        "membership_sha256": record["membership_sha256"],
+        "calibrator": calibrator.to_dict(),
+        "calibrator_sha256": calibrator.sha256,
+        "assembly": asdict(recipe),
+        "selection": selection,
+    }
+    artifact["sha256"] = canonical_digest(artifact)
+    path = Path(record["directory"]) / "q-calibration.json"
+    write_json(path, artifact)
+    record.update(
+        status="calibration_complete",
+        calibration_path=str(path),
+        calibration_sha256=digest(path),
+    )
+    write_json(record_path, record)
+    return record
+
+
 def record_controller_failure(record: dict[str, Any], record_path: Path, error: Exception) -> None:
     """Persist failures without turning an ambiguous remote success into a rerunnable job."""
     if isinstance(error, PushRejected):
@@ -543,7 +667,10 @@ def record_controller_failure(record: dict[str, Any], record_path: Path, error: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "run", "status"))
+    parser.add_argument(
+        "command", choices=("prepare", "run", "status", "calibrate", "assess", "gate")
+    )
+    parser.add_argument("--evidence", type=Path, help="Frozen H assessment or promotion-gate JSON")
     parser.add_argument(
         "--input-size",
         type=int,
@@ -569,6 +696,27 @@ def main() -> None:
         if not RECORD.is_file():
             raise RuntimeError("No PQ-SetFormer run has been prepared")
         print(RECORD.read_text(), end="")
+        return
+    if arguments.command == "calibrate":
+        if not RECORD.is_file():
+            raise RuntimeError("No PQ-SetFormer execution has been prepared")
+        print(
+            json.dumps(
+                calibrate_q_artifacts(json.loads(RECORD.read_text()), record_path=RECORD), indent=2
+            )
+        )
+        return
+    if arguments.command in {"assess", "gate"}:
+        if not RECORD.is_file() or arguments.evidence is None:
+            raise RuntimeError("Assessment/gate needs an active record and --evidence JSON")
+        evidence = json.loads(arguments.evidence.read_text())
+        record = json.loads(RECORD.read_text())
+        result = (
+            record_frozen_h_assessment(record, RECORD, evidence)
+            if arguments.command == "assess"
+            else record_promotion_gate(record, RECORD, evidence)
+        )
+        print(json.dumps(result, indent=2))
         return
 
     RECORD.parent.mkdir(parents=True, exist_ok=True)

@@ -69,3 +69,16 @@ def test_remote_amp_overflow_backs_off_and_still_requires_five_updates() -> None
     assert "if amp_overflows > MAX_AMP_OVERFLOWS" in source
     assert "if optimizer_step == target_steps:" in source
     assert '"attempted_microbatches"' in source
+
+
+def test_quality_adapter_is_packaged_and_wrapper_uses_its_real_features() -> None:
+    model = (HERE / "model.py").read_text()
+    controller = (HERE / "run.py").read_text()
+
+    assert "_conditional_iou_loss" in model
+    assert "self.base.criterion.matcher" in model
+    assert "pred_query_features" in model
+    assert "pixel_features" in model
+    assert "mask_confidence_proxy" not in model
+    assert "PQ-SetFormer E2 adapter" in controller
+    assert "pred_query_features" in controller

@@ -210,10 +210,24 @@ class Candidate:
 
 def candidate_cache_hash(cache: Mapping[str, Sequence[Candidate]]) -> str:
     """Hash a candidate cache by content, including probability provenance."""
-    serial = {
-        filename: [serialize_candidate(candidate) for candidate in candidates]
-        for filename, candidates in sorted(cache.items())
-    }
+    serial = {}
+    for filename, candidates in sorted(cache.items()):
+        serial[filename] = [
+            {
+                "query_id": candidate.query_id,
+                "mask": encode_rle(candidate.mask),
+                "presence": candidate.presence,
+                "presence_logit": candidate.presence_logit,
+                "predicted_iou": candidate.predicted_iou,
+                "source": candidate.source,
+                "probability_sha256": (
+                    None
+                    if candidate.mask_probability is None
+                    else hashlib.sha256(candidate.mask_probability.tobytes()).hexdigest()
+                ),
+            }
+            for candidate in candidates
+        ]
     return _digest(serial)
 
 
@@ -228,6 +242,7 @@ def serialize_candidate(
     does not.  This makes a cache incapable of pretending it supports a later
     mask-threshold search when it does not.
     """
+    rows, columns = np.where(candidate.mask)
     row: dict[str, Any] = {
         "schema_version": CANDIDATE_SCHEMA_VERSION,
         "query_id": candidate.query_id,
@@ -237,35 +252,44 @@ def serialize_candidate(
         "source": candidate.source,
         "native_area": int(candidate.mask.sum()),
         "component_count": component_count(candidate.mask),
+        "bbox_xyxy": [
+            int(columns.min()),
+            int(rows.min()),
+            int(columns.max()) + 1,
+            int(rows.max()) + 1,
+        ],
         "rle": encode_rle(candidate.mask),
     }
-    if candidate.mask_probability is not None:
-        probability = candidate.mask_probability
-        if probability_size <= 0:
-            raise ValueError("Candidate probability cache size must be positive")
-        height, width = probability.shape
-        scale = min(1.0, probability_size / max(height, width))
-        cached_shape = (max(1, round(height * scale)), max(1, round(width * scale)))
-        if cached_shape != probability.shape:
-            probability = np.asarray(
-                Image.fromarray(probability).resize(
-                    (cached_shape[1], cached_shape[0]), Image.Resampling.BILINEAR
-                ),
-                dtype=np.float32,
-            )
-        encoded = zlib.compress(np.rint(probability * 255).astype(np.uint8).tobytes(), level=9)
-        if len(encoded) > maximum_probability_bytes:
-            raise ValueError(
-                "Candidate probability payload exceeds the declared cache bound; "
-                "do not write a threshold-untunable cache"
-            )
-        row.update(
-            probability_codec="q8-zlib-v1",
-            probability_shape=list(cached_shape),
-            probability_native_shape=list(candidate.mask_probability.shape),
-            probability_payload=base64.b64encode(encoded).decode("ascii"),
-            mask_entropy=float(_mask_entropy(candidate.mask_probability)),
+    if candidate.mask_probability is None:
+        raise ValueError("Candidate v2 cache requires retained mask probabilities")
+    probability = candidate.mask_probability
+    if probability_size <= 0:
+        raise ValueError("Candidate probability cache size must be positive")
+    height, width = probability.shape
+    scale = min(1.0, probability_size / max(height, width))
+    cached_shape = (max(1, round(height * scale)), max(1, round(width * scale)))
+    if cached_shape != probability.shape:
+        probability = np.asarray(
+            Image.fromarray(probability).resize(
+                (cached_shape[1], cached_shape[0]), Image.Resampling.BILINEAR
+            ),
+            dtype=np.float32,
         )
+    quantized = np.rint(probability * 255).astype(np.uint8).tobytes()
+    encoded = zlib.compress(quantized, level=9)
+    if len(encoded) > maximum_probability_bytes:
+        raise ValueError(
+            "Candidate probability payload exceeds the declared cache bound; "
+            "do not write a threshold-untunable cache"
+        )
+    row.update(
+        probability_codec="q8-zlib-v1",
+        probability_shape=list(cached_shape),
+        probability_native_shape=list(candidate.mask_probability.shape),
+        probability_payload=base64.b64encode(encoded).decode("ascii"),
+        probability_payload_sha256=hashlib.sha256(quantized).hexdigest(),
+        mask_entropy=float(_mask_entropy(candidate.mask_probability)),
+    )
     return row
 
 
@@ -286,6 +310,8 @@ def deserialize_candidate(row: Mapping[str, Any]) -> Candidate:
             raise ValueError("Candidate probability payload is malformed") from error
         if len(raw) != math.prod(shape):
             raise ValueError("Candidate probability payload length is invalid")
+        if row.get("probability_payload_sha256") != hashlib.sha256(raw).hexdigest():
+            raise ValueError("Candidate probability payload hash is invalid")
         probability = np.frombuffer(raw, dtype=np.uint8).reshape(shape).astype(np.float32) / 255
         native_shape = tuple(row.get("probability_native_shape", shape))
         if len(native_shape) != 2 or any(
@@ -299,6 +325,8 @@ def deserialize_candidate(row: Mapping[str, Any]) -> Candidate:
                 ),
                 dtype=np.float32,
             )
+    if probability is None:
+        raise ValueError("Candidate v2 cache requires a probability payload")
     return Candidate(
         str(row["query_id"]),
         decode_rle(row["rle"]),
@@ -362,6 +390,29 @@ def _containment(first: np.ndarray, second: np.ndarray) -> float:
     return intersection / max(min(int(first.sum()), int(second.sum())), 1)
 
 
+def candidate_overlap_summaries(candidates: Sequence[Candidate]) -> list[dict[str, float]]:
+    """Native overlap/containment summaries against strictly stronger queries."""
+    result = []
+    for index, candidate in enumerate(candidates):
+        stronger = [
+            other
+            for other_index, other in enumerate(candidates)
+            if (other.presence * other.predicted_iou, -other_index)
+            > (candidate.presence * candidate.predicted_iou, -index)
+        ]
+        result.append(
+            {
+                "maximum_iou_with_stronger_query": max(
+                    (_mask_iou(candidate.mask, other.mask) for other in stronger), default=0.0
+                ),
+                "maximum_containment_with_stronger_query": max(
+                    (_containment(candidate.mask, other.mask) for other in stronger), default=0.0
+                ),
+            }
+        )
+    return result
+
+
 def candidate_features(candidates: Sequence[Candidate]) -> np.ndarray:
     """Return the frozen, low-capacity calibrator feature matrix."""
     rows = []
@@ -383,9 +434,14 @@ def candidate_features(candidates: Sequence[Candidate]) -> np.ndarray:
         )
         entropy = _mask_entropy(probability)
         presence = min(max(candidate.presence, 1e-6), 1 - 1e-6)
+        presence_logit = (
+            candidate.presence_logit
+            if candidate.presence_logit is not None
+            else math.log(presence / (1 - presence))
+        )
         rows.append(
             [
-                math.log(presence / (1 - presence)),
+                presence_logit,
                 candidate.predicted_iou,
                 math.log1p(int(candidate.mask.sum())),
                 entropy,
@@ -576,31 +632,38 @@ def assemble_instances(
         zip(utilities, candidates, strict=True),
         key=lambda item: (-float(item[0]), item[1].query_id),
     )
-    retained: list[tuple[float, Candidate]] = []
+    retained: list[tuple[float, Candidate, np.ndarray]] = []
     area_floor = max(int(recipe.minimum_area), 1)
     for utility, candidate in ordered:
-        if utility < recipe.utility_threshold or int(candidate.mask.sum()) < area_floor:
+        probability = (
+            candidate.mask_probability
+            if candidate.mask_probability is not None
+            else candidate.mask.astype(np.float32)
+        )
+        effective_mask = probability >= recipe.mask_threshold
+        # Only numerically empty candidates are removed before ownership.  The
+        # selected area threshold applies to the post-ownership remainder.
+        if utility < recipe.utility_threshold or not effective_mask.any():
             continue
         if any(
-            _mask_iou(candidate.mask, previous.mask) >= recipe.duplicate_iou
-            or _containment(candidate.mask, previous.mask) >= recipe.containment
-            for _, previous in retained
+            _mask_iou(effective_mask, previous_mask) >= recipe.duplicate_iou
+            or _containment(effective_mask, previous_mask) >= recipe.containment
+            for _, _, previous_mask in retained
         ):
             continue
-        retained.append((float(utility), candidate))
+        retained.append((float(utility), candidate, effective_mask))
     if not retained:
         return []
 
     shape = retained[0][1].mask.shape
     best_score = np.full(shape, -np.inf, dtype=np.float32)
     owner = np.full(shape, -1, dtype=np.int16)
-    for index, (utility, candidate) in enumerate(retained):
+    for index, (utility, candidate, eligible) in enumerate(retained):
         probability = (
             candidate.mask_probability
             if candidate.mask_probability is not None
             else candidate.mask.astype(np.float32)
         )
-        eligible = probability >= recipe.mask_threshold
         clipped = np.clip(probability, 1e-6, 1 - 1e-6)
         logit = np.log(clipped / (1 - clipped))
         score = logit + recipe.ownership_gamma * math.log(max(utility, 1e-6))

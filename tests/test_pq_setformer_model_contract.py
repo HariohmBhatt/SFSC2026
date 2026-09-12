@@ -52,6 +52,14 @@ def test_remote_training_uses_safe_amp_accumulation_and_gradient_clipping() -> N
     assert "custom_op_forward_backward" in source
 
 
+def test_remote_evaluation_logs_exact_per_file_pq_breakdown() -> None:
+    source = (HERE / "remote.py").read_text()
+
+    assert "per_file[filename].update(" in source
+    assert "pq=file_iou / file_denominator" in source
+    assert '**metrics["files"][name]' in source
+
+
 def test_remote_releases_training_model_before_checkpoint_reload() -> None:
     source = (HERE / "remote.py").read_text()
 

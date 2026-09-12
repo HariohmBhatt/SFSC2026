@@ -34,6 +34,20 @@ uv run python filament-pq-setformer/run.py status
 uv run python filament-pq-setformer/run.py run
 ```
 
+For a smoke or pilot, start the local Telegram relay in a second terminal
+before `run`. It sends every controller state transition immediately, then the
+complete structured training event stream plus the verified global and
+per-image PQ report after Kaggle artifacts are available:
+
+```bash
+uv run python filament-pq-setformer/telegram_monitor.py --interval 45
+```
+
+It reads `SFSC_TELEGRAM_BOT_TOKEN` and `SFSC_TELEGRAM_CHAT_ID` from `.env` or
+the environment. Kaggle does not expose live stdout/stderr during execution;
+the relay reports live status and forwards the complete logger event stream on
+the terminal artifact fetch.
+
 After a successful 1024 smoke, prepare the measured-safe resolution preflight
 explicitly, for example:
 

@@ -383,6 +383,13 @@ def infer_smoke(
         total_fn += metrics["fn"]
         total_iou += metrics["sum_iou"]
         per_file[filename] = metrics["files"][filename]
+        file_denominator = metrics["tp"] + 0.5 * (metrics["fp"] + metrics["fn"])
+        file_iou = metrics["sum_iou"]
+        per_file[filename].update(
+            pq=file_iou / file_denominator if file_denominator else 0.0,
+            sq=file_iou / metrics["tp"] if metrics["tp"] else 0.0,
+            rq=metrics["tp"] / file_denominator if file_denominator else 0.0,
+        )
         rows = [
             core.serialize_candidate(
                 candidate,
@@ -583,7 +590,14 @@ def main() -> None:
         )
         logger.log_table(
             f"{run_kind}_images",
-            [{"filename": name, "candidates": len(rows)} for name, rows in sorted(cache.items())],
+            [
+                {
+                    "filename": name,
+                    "candidates": len(rows),
+                    **metrics["files"][name],
+                }
+                for name, rows in sorted(cache.items())
+            ],
         )
         logger.log_artifact(
             f"{run_kind}-model",

@@ -63,7 +63,7 @@ def test_record_selection_is_deterministic_and_never_combines_annotators() -> No
     assert first in records
 
 
-def test_scaled_polygon_rasterization_preserves_instances_without_unioning() -> None:
+def test_native_rasterization_then_nearest_resize_preserves_instances_without_unioning() -> None:
     record = data.AnnotationRecord(
         "record",
         (
@@ -78,6 +78,22 @@ def test_scaled_polygon_rasterization_preserves_instances_without_unioning() -> 
     assert masks.dtype == np.bool_
     assert masks[0].any() and masks[1].any()
     assert not np.logical_and(masks[0], masks[1]).any()
+
+
+def test_native_rasterization_preserves_a_thin_mask_that_coordinate_scaling_loses() -> None:
+    # This one-native-pixel stripe lands in a different 4x4 output cell from
+    # its neighbour.  Rasterizing first is the contract; scaling vertices first
+    # can change which output pixel owns the stripe at polygon boundaries.
+    record = data.AnnotationRecord(
+        "thin",
+        ({"segmentation": [[2, 0, 3, 0, 3, 16, 2, 16, 2, 0]]},),
+    )
+
+    masks = data.rasterize_record(record, native_size=16, output_size=4)
+
+    assert masks.shape == (1, 4, 4)
+    assert masks[0, :, 0].all()
+    assert masks[0].sum() == 4
 
 
 def test_virtual_epoch_order_is_reproducible_and_covers_every_filename() -> None:

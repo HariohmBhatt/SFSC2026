@@ -42,6 +42,11 @@ class ModelConfig:
     importance_sample_ratio: float = 0.75
     denoising_queries: int = 32
     pretrained_backbone: bool = False
+    backbone_weights_path: str | None = None
+    backbone_weights_sha256: str | None = None
+    normalization: str = "GN"
+    quality_pooling: str = "detached_mask_weighted_pixel_features"
+    candidate_probability_cache_bytes: int = 262_144
     peak_vram_gb: float = 14.5
 
     def __post_init__(self) -> None:
@@ -51,6 +56,25 @@ class ModelConfig:
             raise ValueError("input_size must be at least 1024 and divisible by 32")
         if self.input_channels != 1:
             raise ValueError("SFSC input must remain one-channel grayscale")
+        if self.pretrained_backbone:
+            if not self.backbone_weights_path:
+                raise ValueError("pretrained_backbone requires a declared local weight path")
+            if (
+                not self.backbone_weights_sha256
+                or len(self.backbone_weights_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in self.backbone_weights_sha256)
+            ):
+                raise ValueError("pretrained_backbone requires a declared sha256")
+            if self.normalization != "FrozenBN":
+                raise ValueError("pretrained ImageNet ResNet-50 requires FrozenBN provenance")
+        elif self.backbone_weights_path or self.backbone_weights_sha256:
+            raise ValueError("random initialization must not declare pretrained backbone weights")
+        elif self.normalization != "GN":
+            raise ValueError("random initialization requires trainable GroupNorm")
+        if self.quality_pooling != "detached_mask_weighted_pixel_features":
+            raise ValueError("Only detached mask-weighted conditional-IoU pooling is supported")
+        if not 1_024 <= self.candidate_probability_cache_bytes <= 1_048_576:
+            raise ValueError("candidate probability cache bound is unsafe")
         if self.queries <= self.audited_max_instances:
             raise ValueError("Model needs more queries than the audited maximum instance count")
         if self.queries > 96:
@@ -72,7 +96,7 @@ class LossConfig:
     mask_dice: float = 5.0
     box_l1: float = 1.0
     box_giou: float = 0.5
-    quality: float = 0.0
+    quality: float = 1.0
     foreground: float = 0.0
     boundary: float = 0.0
     cldice: float = 0.0

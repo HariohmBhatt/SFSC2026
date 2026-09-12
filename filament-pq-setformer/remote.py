@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import importlib.metadata
 import json
 import math
 import os
@@ -41,6 +42,30 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             value.update(block)
     return value.hexdigest()
+
+
+def runtime_versions() -> dict[str, str]:
+    """Record resolved package and pinned-upstream provenance in every report."""
+    names = (
+        "torch",
+        "torchvision",
+        "detectron2",
+        "maskdino",
+        "numpy",
+        "scipy",
+        "pycocotools",
+        "wandb",
+    )
+    versions = {"python": platform.python_version()}
+    for name in names:
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            versions[name] = "vendored-unpackaged"
+    lock = json.loads(Path("/kaggle/working/vendor-lock.json").read_text())
+    versions["detectron2_commit"] = str(lock["detectron2"]["commit"])
+    versions["maskdino_commit"] = str(lock["maskdino"]["commit"])
+    return versions
 
 
 def verify_source_snapshot() -> None:
@@ -324,7 +349,15 @@ def infer_smoke(
             mask_threshold=experiment.assembly.mask_threshold,
         )[0]
         candidates = [
-            core.Candidate(row["query_id"], row["mask"], row["presence"], row["predicted_iou"])
+            core.Candidate(
+                row["query_id"],
+                row["mask"],
+                row["presence"],
+                row["predicted_iou"],
+                row["mask_probability"],
+                presence_logit=row["presence_logit"],
+                source=row["source"],
+            )
             for row in raw
         ]
         masks = core.assemble_instances(candidates, recipe=experiment.assembly)
@@ -339,12 +372,10 @@ def infer_smoke(
         total_iou += metrics["sum_iou"]
         per_file[filename] = metrics["files"][filename]
         cache[filename] = [
-            {
-                "query_id": candidate.query_id,
-                "presence": candidate.presence,
-                "predicted_iou": candidate.predicted_iou,
-                "rle": core.encode_rle(candidate.mask),
-            }
+            core.serialize_candidate(
+                candidate,
+                maximum_probability_bytes=experiment.model.candidate_probability_cache_bytes,
+            )
             for candidate in candidates
         ]
         del item, raw, candidates, masks, records
@@ -497,6 +528,7 @@ def main() -> None:
             "membership_sha256": TASK["membership_sha256"],
             "config_sha256": experiment.sha256,
             "dataset": TASK["dataset"],
+            "runtime_versions": runtime_versions(),
             "annotation_sha256": annotation_index.sha256,
             "gpu": gpu,
             "training": training,
@@ -507,8 +539,9 @@ def main() -> None:
             "checkpoint_sha256": digest(checkpoint),
             "candidates_sha256": digest(cache_path),
             "model_parameters": sum(parameter.numel() for parameter in reloaded.parameters()),
-            "quality_head": False,
-            "quality_kind": "mask_confidence_proxy",
+            "initialization": reloaded.initialization_provenance,
+            "quality_head": True,
+            "quality_kind": "conditional_mask_iou",
             "wandb_run_id": logger.manifest["wandb_run_id"],
         }
         report_path = WORK / f"{run_kind}-report.json"

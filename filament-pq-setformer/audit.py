@@ -44,7 +44,26 @@ def _valid_candidate(row: Any) -> bool:
         decoded = coco_mask.decode({"size": rle["size"], "counts": rle["counts"].encode("ascii")})
     except Exception:
         return False
-    return decoded.shape == (2048, 2048) and bool(np.asarray(decoded).any())
+    if decoded.shape != (2048, 2048) or not bool(np.asarray(decoded).any()):
+        return False
+    # v1 is retained only for auditing the historical E1 diagnostic. New runs
+    # must use the ownership-capable v2 contract.
+    version = row.get("schema_version", 1)
+    if version == 1:
+        return True
+    if version != 2 or not isinstance(row.get("source"), str) or not row["source"]:
+        return False
+    if not _finite(row.get("presence_logit")):
+        return False
+    codec = row.get("probability_codec")
+    shape = row.get("probability_shape")
+    return (
+        codec == "q8-zlib-v1"
+        and isinstance(shape, list)
+        and len(shape) == 2
+        and all(isinstance(value, int) and value > 0 for value in shape)
+        and isinstance(row.get("probability_payload"), str)
+    )
 
 
 def audit_stage(

@@ -1,10 +1,9 @@
 # PQ-SetFormer operator guide
 
-The code prepares and executes the mandatory E1 Kaggle P100 smoke and the
-subsequent frozen E1 pilot. The private data, CUDA/MaskDINO build, AMP, memory,
-checkpoint, inference, and artifact gates passed at 1024 pixels in run
-`20260910-161954` and at the selected 1216-pixel resolution in run
-`20260910-163643`.
+The code implements the bounded PQ-SetFormer research seams. It does not make
+an existing checkpoint promotable merely because a Kaggle kernel completed.
+The 2026-09-11 E1 result is preserved as a failed diagnostic; see
+[HISTORICAL_E1_DISPOSITION.md](HISTORICAL_E1_DISPOSITION.md).
 
 Training runs under Kaggle2 (`hariohmhemantbhatt`) and mounts only the private
 `hariohmhemantbhatt/sfsc2026-private-data` dataset. The kernel has no competition
@@ -51,9 +50,11 @@ uv run python filament-pq-setformer/run.py prepare --run-kind pilot --input-size
 uv run python filament-pq-setformer/run.py run
 ```
 
-The pilot fits only the frozen 289-image R membership and evaluates its final
-checkpoint on the frozen 87-image H membership. It does not mount a competition
-source or submit predictions.
+The pilot fits only the frozen 289-image R membership and writes candidates for
+the frozen Q-fit/Q-cal memberships. It cannot infer H through this stage. E3
+fits the versioned logistic calibrator on Q-fit, selects a declared recipe on
+Q-cal, and records both membership and candidate hashes. H is a separate,
+one-shot assessment after that recipe has been frozen.
 
 `prepare` freezes the exact source, configuration, and image membership under
 `outputs/pq-setformer-<timestamp>/` and writes the active record to
@@ -73,11 +74,13 @@ preparing another job. If Kaggle completes but artifact download fails, it
 remains `remote_complete_fetch_pending`, and rerunning `run` retries only the
 fetch/audit.
 
-Terminal success is `smoke_complete` for a preflight or `pilot_complete` for the
-long E1 pilot, for example:
+Successful artifact verification is `execution_complete`; it is not promotion.
+The only post-assessment outcomes are `gate_failed` and `promoted`, and a
+promotion requires matched-R control evidence, candidate diagnostics, and a
+positive paired date-block bootstrap interval. For example:
 
 ```json
-{"status": "smoke_complete"}
+{"status": "execution_complete"}
 ```
 
 Any `failed` state requires inspection of the saved error and remote logs before
@@ -108,3 +111,20 @@ submission. Those stages are gated on measured pilot evidence and are specified 
 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). This boundary prevents an
 unverified custom CUDA build or unsafe memory estimate from consuming a full
 nine-hour P100 session.
+
+## Initialization and candidate migration
+
+Random R50 runs use explicit trainable GroupNorm. A generic ImageNet R50 is
+allowed only when `pretrained_backbone`, a local weight path, and that file's
+SHA-256 are frozen in the configuration; the RGB stem is averaged to one input
+channel and the load fails if any non-classifier backbone tensor is missing. No
+weight is downloaded at runtime.
+
+New candidates use schema v2: native RLE plus bounded, quantized low-resolution
+probabilities, presence logit, conditional-IoU estimate, source provenance,
+geometry, and payload hash. The cache is rejected if the probability payload
+would exceed its declared bound. Version-1 candidates remain auditable only and
+cannot be calibrated or assembled under E3, because their ownership logits were
+discarded. The old checkpoint cannot be loaded into E2 because it has no
+conditional-IoU-head weights and the pinned MaskDINO output must be patched to
+provide its documented contract (`loss_quality` and `pred_conditional_iou`).

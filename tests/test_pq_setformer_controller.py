@@ -97,8 +97,11 @@ def test_prepare_freezes_full_e1_pilot_schedule_and_assessment(tmp_path) -> None
     assert record["run_kind"] == "pilot"
     assert record["training_microbatches"] == 6_000
     assert len(record["training_names"]) == 289
-    assert record["inference_names"] == record["split"]["members"]["assessment"]
-    assert len(record["inference_names"]) == 87
+    assert record["inference_names"] == (
+        record["split"]["members"]["quality_fit"]
+        + record["split"]["members"]["quality_calibration"]
+    )
+    assert len(record["inference_names"]) == 103
     assert record["automatic_submission"] is False
 
 
@@ -189,3 +192,28 @@ def test_push_parser_rejects_cli_error_even_when_process_exits_zero() -> None:
 
     with pytest.raises(RuntimeError, match="Maximum weekly GPU quota"):
         runner.kernel_from_push_output(output)
+
+
+def test_gate_decision_requires_matched_control_and_never_promotes_execution_alone(
+    tmp_path,
+) -> None:
+    record_path = tmp_path / "record.json"
+    record = {"status": "execution_complete", "run_id": "run-1"}
+
+    failed = runner.record_promotion_gate(record, record_path, {"pq_delta": 0.1})
+
+    assert failed["status"] == "gate_failed"
+    assert "matched control" in failed["gate_failure_reason"]
+    promoted = runner.record_promotion_gate(
+        {"status": "execution_complete", "run_id": "run-2"},
+        record_path,
+        {
+            "matched_control": {"run_id": "control"},
+            "diagnostics": {"raw_candidate_recall": 0.8, "final_recall": 0.7},
+            "bootstrap": {"pq_delta": 0.02, "bootstrap_lower_95": 0.001},
+            "rq_delta": 0.01,
+            "sq_delta": 0.0,
+        },
+    )
+
+    assert promoted["status"] == "promoted"

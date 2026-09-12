@@ -57,3 +57,24 @@ def test_config_hash_changes_for_a_training_change() -> None:
     )
 
     assert original.sha256 != changed.sha256
+
+
+def test_pretrained_backbone_requires_declared_local_provenance() -> None:
+    with pytest.raises(ValueError, match="local weight path"):
+        config.ModelConfig(pretrained_backbone=True)
+    with pytest.raises(ValueError, match="sha256"):
+        config.ModelConfig(
+            pretrained_backbone=True,
+            backbone_weights_path="/weights/r50.pt",
+            normalization="FrozenBN",
+        )
+
+    model = config.ModelConfig(
+        pretrained_backbone=True,
+        backbone_weights_path="/weights/r50.pt",
+        backbone_weights_sha256="a" * 64,
+        normalization="FrozenBN",
+    )
+    assert model.normalization == "FrozenBN"
+    assert config.ModelConfig().normalization == "GN"
+    assert config.LossConfig().quality == 1.0

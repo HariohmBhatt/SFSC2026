@@ -28,7 +28,16 @@ HERE = Path(__file__).resolve().parent
 RECORD = ROOT / "reports/pq_setformer_run.json"
 OWNER = "hariohmhemantbhatt"
 PRIVATE_DATASET_SOURCE = "hariohmhemantbhatt/sfsc2026-private-data"
-TERMINAL_STATUSES = {"smoke_complete", "pilot_complete", "failed", "cancelled"}
+TERMINAL_STATUSES = {
+    # The two legacy statuses are accepted only to preserve historical evidence.
+    "smoke_complete",
+    "pilot_complete",
+    "execution_complete",
+    "gate_failed",
+    "promoted",
+    "failed",
+    "cancelled",
+}
 SOURCE_PATHS = (
     "config.py",
     "core.py",
@@ -180,7 +189,11 @@ def prepare(
         target.write_text(value)
 
     training_names = split.fitting
-    inference_names = training_names[:2] if run_kind == "smoke" else split.assessment
+    # Pilot H is one-shot promotion evidence.  It cannot be placed in the
+    # train/infer task that creates Q-fit/Q-cal calibration artifacts.
+    inference_names = (
+        training_names[:2] if run_kind == "smoke" else split.quality_fit + split.quality_calibration
+    )
     training_microbatches = (
         experiment.training.smoke_microbatches
         if run_kind == "smoke"
@@ -457,11 +470,53 @@ def monitor(record: dict[str, Any], *, record_path: Path = RECORD) -> None:
         raise RuntimeError(f"Cannot fetch run in state {record['status']!r}")
     report = fetch_and_verify(record)
     record.update(
-        status=f"{record['run_kind']}_complete",
+        status="execution_complete",
         verified_at=datetime.now(UTC).isoformat(),
         report=report,
     )
     write_json(record_path, record)
+
+
+def record_promotion_gate(
+    record: dict[str, Any], record_path: Path, evidence: dict[str, Any]
+) -> dict[str, Any]:
+    """Record the only terminal state permitted after a successful execution.
+
+    Promotion needs an independently trained matched-R control and the complete
+    CPU diagnostic/blocked-bootstrap evidence.  This function deliberately
+    cannot launch a stage and an incomplete evidence packet is durable failure,
+    not an invitation to tune on H.
+    """
+    if record.get("status") != "execution_complete":
+        raise ValueError("Only an execution_complete stage can enter the promotion gate")
+    diagnostics = evidence.get("diagnostics")
+    bootstrap = evidence.get("bootstrap")
+    reason = None
+    if not isinstance(evidence.get("matched_control"), dict):
+        reason = "matched control evidence is absent"
+    elif not isinstance(diagnostics, dict) or not {
+        "raw_candidate_recall",
+        "final_recall",
+    } <= set(diagnostics):
+        reason = "required candidate recall diagnostics are absent"
+    elif not isinstance(bootstrap, dict) or not {
+        "pq_delta",
+        "bootstrap_lower_95",
+    } <= set(bootstrap):
+        reason = "paired date-block bootstrap evidence is absent"
+    elif bootstrap["pq_delta"] < 0.015 or bootstrap["bootstrap_lower_95"] <= 0:
+        reason = "PQ gate did not pass"
+    elif evidence.get("rq_delta", 0.0) <= 0 or evidence.get("sq_delta", 0.0) < -0.01:
+        reason = "recognition/segmentation quality gate did not pass"
+    record["promotion_evidence"] = evidence
+    record["gate_decided_at"] = datetime.now(UTC).isoformat()
+    if reason:
+        record["status"] = "gate_failed"
+        record["gate_failure_reason"] = reason
+    else:
+        record["status"] = "promoted"
+    write_json(record_path, record)
+    return record
 
 
 def record_controller_failure(record: dict[str, Any], record_path: Path, error: Exception) -> None:

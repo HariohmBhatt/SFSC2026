@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
+import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
 import numpy as np
+from PIL import Image
 from pycocotools import mask as coco_mask
 from scipy import ndimage
 from scipy.optimize import linear_sum_assignment, minimize
@@ -27,6 +30,7 @@ FEATURE_NAMES = (
     "maximum_containment_with_stronger_query",
     "component_count_capped",
 )
+CANDIDATE_SCHEMA_VERSION = 2
 PILOT_SALTS = {
     1: ("native-v4:9", "native-v4:q:8"),
     2: ("pq-setformer:pilot2:34", "pq-setformer:pilot2:q:0"),
@@ -178,6 +182,7 @@ class Candidate:
     presence: float
     predicted_iou: float
     mask_probability: np.ndarray | None = None
+    presence_logit: float | None = None
     source: str = "identity"
 
     def __post_init__(self) -> None:
@@ -186,6 +191,10 @@ class Candidate:
             raise ValueError("Candidate mask must be non-empty and two-dimensional")
         if not 0 <= self.presence <= 1 or not 0 <= self.predicted_iou <= 1:
             raise ValueError("Candidate scores must be probabilities")
+        if self.presence_logit is not None and not math.isfinite(self.presence_logit):
+            raise ValueError("presence_logit must be finite when present")
+        if not self.source:
+            raise ValueError("Candidate source provenance is required")
         object.__setattr__(self, "mask", mask)
         if self.mask_probability is not None:
             probability = np.asarray(self.mask_probability, dtype=np.float32)
@@ -197,6 +206,110 @@ class Candidate:
             ):
                 raise ValueError("mask_probability must be finite, aligned, and in [0, 1]")
             object.__setattr__(self, "mask_probability", probability)
+
+
+def candidate_cache_hash(cache: Mapping[str, Sequence[Candidate]]) -> str:
+    """Hash a candidate cache by content, including probability provenance."""
+    serial = {
+        filename: [serialize_candidate(candidate) for candidate in candidates]
+        for filename, candidates in sorted(cache.items())
+    }
+    return _digest(serial)
+
+
+def serialize_candidate(
+    candidate: Candidate, *, maximum_probability_bytes: int = 262_144, probability_size: int = 256
+) -> dict[str, Any]:
+    """Serialize a native candidate without silently dropping ownership data.
+
+    The full-resolution boolean RLE is the official provisional mask.  Dense
+    probabilities are quantized and compressed only when their bounded payload
+    fits; callers must deliberately choose a smaller cached representation if it
+    does not.  This makes a cache incapable of pretending it supports a later
+    mask-threshold search when it does not.
+    """
+    row: dict[str, Any] = {
+        "schema_version": CANDIDATE_SCHEMA_VERSION,
+        "query_id": candidate.query_id,
+        "presence": candidate.presence,
+        "presence_logit": candidate.presence_logit,
+        "predicted_iou": candidate.predicted_iou,
+        "source": candidate.source,
+        "native_area": int(candidate.mask.sum()),
+        "component_count": component_count(candidate.mask),
+        "rle": encode_rle(candidate.mask),
+    }
+    if candidate.mask_probability is not None:
+        probability = candidate.mask_probability
+        if probability_size <= 0:
+            raise ValueError("Candidate probability cache size must be positive")
+        height, width = probability.shape
+        scale = min(1.0, probability_size / max(height, width))
+        cached_shape = (max(1, round(height * scale)), max(1, round(width * scale)))
+        if cached_shape != probability.shape:
+            probability = np.asarray(
+                Image.fromarray(probability).resize(
+                    (cached_shape[1], cached_shape[0]), Image.Resampling.BILINEAR
+                ),
+                dtype=np.float32,
+            )
+        encoded = zlib.compress(np.rint(probability * 255).astype(np.uint8).tobytes(), level=9)
+        if len(encoded) > maximum_probability_bytes:
+            raise ValueError(
+                "Candidate probability payload exceeds the declared cache bound; "
+                "do not write a threshold-untunable cache"
+            )
+        row.update(
+            probability_codec="q8-zlib-v1",
+            probability_shape=list(cached_shape),
+            probability_native_shape=list(candidate.mask_probability.shape),
+            probability_payload=base64.b64encode(encoded).decode("ascii"),
+            mask_entropy=float(_mask_entropy(candidate.mask_probability)),
+        )
+    return row
+
+
+def deserialize_candidate(row: Mapping[str, Any]) -> Candidate:
+    """Read only the versioned, ownership-capable candidate-cache schema."""
+    if row.get("schema_version") != CANDIDATE_SCHEMA_VERSION:
+        raise ValueError("Candidate cache schema mismatch")
+    probability = None
+    if row.get("probability_codec") is not None:
+        if row.get("probability_codec") != "q8-zlib-v1":
+            raise ValueError("Unsupported candidate probability codec")
+        shape = tuple(row.get("probability_shape", ()))
+        if len(shape) != 2 or any(not isinstance(dim, int) or dim <= 0 for dim in shape):
+            raise ValueError("Candidate probability shape is invalid")
+        try:
+            raw = zlib.decompress(base64.b64decode(str(row["probability_payload"]), validate=True))
+        except (KeyError, ValueError, zlib.error) as error:
+            raise ValueError("Candidate probability payload is malformed") from error
+        if len(raw) != math.prod(shape):
+            raise ValueError("Candidate probability payload length is invalid")
+        probability = np.frombuffer(raw, dtype=np.uint8).reshape(shape).astype(np.float32) / 255
+        native_shape = tuple(row.get("probability_native_shape", shape))
+        if len(native_shape) != 2 or any(
+            not isinstance(dim, int) or dim <= 0 for dim in native_shape
+        ):
+            raise ValueError("Candidate native probability shape is invalid")
+        if native_shape != shape:
+            probability = np.asarray(
+                Image.fromarray(probability).resize(
+                    (native_shape[1], native_shape[0]), Image.Resampling.BILINEAR
+                ),
+                dtype=np.float32,
+            )
+    return Candidate(
+        str(row["query_id"]),
+        decode_rle(row["rle"]),
+        float(row["presence"]),
+        float(row["predicted_iou"]),
+        probability,
+        presence_logit=(
+            None if row.get("presence_logit") is None else float(row["presence_logit"])
+        ),
+        source=str(row.get("source", "")),
+    )
 
 
 @dataclass(frozen=True)
@@ -233,6 +346,11 @@ def component_count(mask: np.ndarray) -> int:
     return int(ndimage.label(np.asarray(mask, dtype=bool), structure=np.ones((3, 3)))[1])
 
 
+def _mask_entropy(probability: np.ndarray) -> float:
+    clipped = np.clip(np.asarray(probability, dtype=np.float32), 1e-6, 1 - 1e-6)
+    return float(np.mean(-clipped * np.log(clipped) - (1 - clipped) * np.log(1 - clipped)))
+
+
 def _mask_iou(first: np.ndarray, second: np.ndarray) -> float:
     intersection = int(np.logical_and(first, second).sum())
     union = int(np.logical_or(first, second).sum())
@@ -263,8 +381,7 @@ def candidate_features(candidates: Sequence[Candidate]) -> np.ndarray:
             if candidate.mask_probability is not None
             else candidate.mask.astype(np.float32)
         )
-        clipped = np.clip(probability, 1e-6, 1 - 1e-6)
-        entropy = float(np.mean(-clipped * np.log(clipped) - (1 - clipped) * np.log(1 - clipped)))
+        entropy = _mask_entropy(probability)
         presence = min(max(candidate.presence, 1e-6), 1 - 1e-6)
         rows.append(
             [
@@ -288,6 +405,8 @@ class Calibrator:
     coefficients: tuple[float, ...]
     regularization: float
     examples: int
+    membership_sha256: str = ""
+    candidate_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -297,6 +416,8 @@ class Calibrator:
             "coefficients": list(self.coefficients),
             "regularization": self.regularization,
             "examples": self.examples,
+            "membership_sha256": self.membership_sha256,
+            "candidate_sha256": self.candidate_sha256,
         }
 
     @classmethod
@@ -308,11 +429,15 @@ class Calibrator:
             coefficients=tuple(map(float, value["coefficients"])),
             regularization=float(value["regularization"]),
             examples=int(value["examples"]),
+            membership_sha256=str(value.get("membership_sha256", "")),
+            candidate_sha256=str(value.get("candidate_sha256", "")),
         )
         if result.feature_names != FEATURE_NAMES:
             raise ValueError("Calibrator feature schema mismatch")
         if len(result.coefficients) != len(FEATURE_NAMES) + 1:
             raise ValueError("Calibrator coefficient shape mismatch")
+        if bool(result.membership_sha256) != bool(result.candidate_sha256):
+            raise ValueError("Calibrator provenance is incomplete")
         return result
 
     @property
@@ -367,6 +492,7 @@ def fit_calibrator(
     fitted = minimize(objective, np.zeros(normalized.shape[1]), jac=True, method="L-BFGS-B")
     if not fitted.success or not np.isfinite(fitted.fun):
         raise ValueError(f"Calibration failed: {fitted.message}")
+    membership_sha256 = _digest(sorted(candidates_by_file))
     return Calibrator(
         feature_names=FEATURE_NAMES,
         mean=tuple(mean),
@@ -374,6 +500,60 @@ def fit_calibrator(
         coefficients=tuple(fitted.x),
         regularization=regularization,
         examples=len(target),
+        membership_sha256=membership_sha256,
+        candidate_sha256=candidate_cache_hash(candidates_by_file),
+    )
+
+
+def fit_and_select_q_recipe(
+    quality_fit_candidates: Mapping[str, Sequence[Candidate]],
+    quality_fit_truths: Mapping[str, Sequence[Sequence[np.ndarray]]],
+    quality_cal_candidates: Mapping[str, Sequence[Candidate]],
+    quality_cal_truths: Mapping[str, Sequence[Sequence[np.ndarray]]],
+    recipes: Sequence[Any],
+) -> tuple[Calibrator, Any, dict[str, Any]]:
+    """Fit solely on Q-fit and select one declared recipe solely on Q-cal.
+
+    H is deliberately absent from this public seam.  Empty grids, overlapping
+    members, or candidates without retained probabilities fail closed.
+    """
+    q_fit = set(quality_fit_candidates)
+    q_cal = set(quality_cal_candidates)
+    if q_fit & q_cal:
+        raise ValueError("Q-fit and Q-cal candidate memberships must be disjoint")
+    if set(quality_fit_truths) != q_fit or set(quality_cal_truths) != q_cal:
+        raise ValueError("Q-fit/Q-cal truth coverage is incomplete")
+    if not recipes:
+        raise ValueError("Q-cal recipe selection requires a declared bounded grid")
+    if any(
+        candidate.mask_probability is None
+        for cache in (*quality_fit_candidates.values(), *quality_cal_candidates.values())
+        for candidate in cache
+    ):
+        raise ValueError("Q calibration requires ownership-capable candidate probabilities")
+    calibrator = fit_calibrator(quality_fit_candidates, quality_fit_truths)
+    scored: list[tuple[float, int, Any, dict[str, Any]]] = []
+    for index, recipe in enumerate(recipes):
+        predictions = {
+            filename: assemble_instances(candidates, recipe=recipe, calibrator=calibrator)
+            for filename, candidates in quality_cal_candidates.items()
+        }
+        report = evaluate_run(predictions, quality_cal_truths)
+        scored.append((float(report["pq"]), index, recipe, report))
+    _, _, recipe, report = max(scored, key=lambda item: (item[0], -item[1]))
+    return (
+        calibrator,
+        recipe,
+        {
+            "selection_split": "Q-cal",
+            "quality_fit_membership_sha256": _digest(sorted(q_fit)),
+            "quality_cal_membership_sha256": _digest(sorted(q_cal)),
+            "quality_cal_candidate_sha256": candidate_cache_hash(quality_cal_candidates),
+            "selected_recipe_index": next(
+                index for _, index, value, _ in scored if value == recipe
+            ),
+            "metrics": report,
+        },
     )
 
 
@@ -459,4 +639,121 @@ def evaluate_run(
         "fn": total.false_negatives,
         "sum_iou": total.matched_iou,
         "files": per_file,
+    }
+
+
+def _recall_at_match_threshold(
+    predictions: Sequence[np.ndarray], truths: Sequence[Sequence[np.ndarray]]
+) -> tuple[int, int, int, int]:
+    """Count recalled truths plus split/merge errors over complete records."""
+    recalled = total = fragments = merges = 0
+    for record in truths:
+        total += len(record)
+        if not record or not predictions:
+            continue
+        ious = pairwise_iou(list(record), list(predictions))
+        recalled += int((ious > 0.5).any(axis=1).sum())
+        fragments += int(((ious > 0.1).sum(axis=1) > 1).sum())
+        merges += int(((ious > 0.1).sum(axis=0) > 1).sum())
+    return recalled, total, fragments, merges
+
+
+def candidate_diagnostics(
+    candidates_by_file: Mapping[str, Sequence[Candidate]],
+    truths_by_file: Mapping[str, Sequence[Sequence[np.ndarray]]],
+    *,
+    final_predictions: Mapping[str, Sequence[np.ndarray]] | None = None,
+    duplicate_suppressions: int = 0,
+    ownership_damaged_matches: int = 0,
+) -> dict[str, Any]:
+    """CPU-feasible evidence required before a candidate set can be promoted."""
+    if set(candidates_by_file) != set(truths_by_file):
+        raise ValueError("Candidate diagnostic coverage differs from truth coverage")
+    if final_predictions is not None and set(final_predictions) != set(truths_by_file):
+        raise ValueError("Final diagnostic coverage differs from truth coverage")
+    raw_recalled = raw_total = final_recalled = final_total = fragments = merges = 0
+    for filename in sorted(truths_by_file):
+        raw, total, raw_fragments, raw_merges = _recall_at_match_threshold(
+            [candidate.mask for candidate in candidates_by_file[filename]], truths_by_file[filename]
+        )
+        raw_recalled += raw
+        raw_total += total
+        fragments += raw_fragments
+        merges += raw_merges
+        if final_predictions is not None:
+            recalled, count, _, _ = _recall_at_match_threshold(
+                final_predictions[filename], truths_by_file[filename]
+            )
+            final_recalled += recalled
+            final_total += count
+    result: dict[str, Any] = {
+        "raw_candidate_recall": raw_recalled / raw_total if raw_total else 0.0,
+        "raw_candidate_recalled": raw_recalled,
+        "truth_instances": raw_total,
+        "duplicate_suppressions": int(duplicate_suppressions),
+        "ownership_damaged_matches": int(ownership_damaged_matches),
+        "fragmentation": fragments,
+        "merges": merges,
+    }
+    if final_predictions is not None:
+        result.update(
+            final_recall=final_recalled / final_total if final_total else 0.0,
+            final_recalled=final_recalled,
+        )
+    return result
+
+
+def paired_block_bootstrap(
+    challenger_files: Mapping[str, Mapping[str, float]],
+    control_files: Mapping[str, Mapping[str, float]],
+    *,
+    blocks: Sequence[int],
+    replicates: int = 2_000,
+    seed: int = 20260910,
+) -> dict[str, float]:
+    """Shared date-block bootstrap of additive PQ sufficient statistics.
+
+    Each mapping value must provide ``tp``, ``fp``, ``fn`` and ``sum_iou``.
+    A comparison absent from either side is intentionally an error, rather than
+    producing a scientifically meaningless confidence interval.
+    """
+    if not challenger_files or set(challenger_files) != set(control_files):
+        raise ValueError("A matched control with identical per-file evidence is required")
+    if replicates < 1 or not blocks:
+        raise ValueError("Bootstrap needs positive replicates and assessment blocks")
+    by_block: dict[int, list[str]] = {int(block): [] for block in blocks}
+    for filename in challenger_files:
+        block = _day(filename) // 60
+        if block not in by_block:
+            raise ValueError("Per-file evidence lies outside frozen assessment blocks")
+        by_block[block].append(filename)
+    if any(not names for names in by_block.values()):
+        raise ValueError("Every assessment block needs matched control evidence")
+
+    def pq(rows: Mapping[str, Mapping[str, float]], sampled: Sequence[int]) -> float:
+        totals = {key: 0.0 for key in ("tp", "fp", "fn", "sum_iou")}
+        for block in sampled:
+            for filename in by_block[block]:
+                for key in totals:
+                    value = rows[filename].get(key)
+                    if not isinstance(value, (int, float)) or not math.isfinite(value):
+                        raise ValueError("Bootstrap evidence contains a non-finite PQ statistic")
+                    totals[key] += value
+        denominator = totals["tp"] + 0.5 * (totals["fp"] + totals["fn"])
+        return totals["sum_iou"] / denominator if denominator else 0.0
+
+    rng = np.random.default_rng(seed)
+    observed = pq(challenger_files, list(by_block)) - pq(control_files, list(by_block))
+    draws = np.asarray(
+        [
+            pq(challenger_files, sampled := rng.choice(list(by_block), len(by_block), replace=True))
+            - pq(control_files, sampled)
+            for _ in range(replicates)
+        ]
+    )
+    return {
+        "pq_delta": float(observed),
+        "bootstrap_lower_95": float(np.quantile(draws, 0.025)),
+        "bootstrap_upper_95": float(np.quantile(draws, 0.975)),
+        "replicates": float(replicates),
     }

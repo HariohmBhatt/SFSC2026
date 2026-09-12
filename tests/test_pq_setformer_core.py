@@ -160,3 +160,80 @@ def test_rle_round_trip_rejects_empty_masks() -> None:
     assert np.array_equal(core.decode_rle(core.encode_rle(mask)), mask)
     with pytest.raises(ValueError, match="empty"):
         core.encode_rle(np.zeros((8, 8), bool))
+
+
+def test_candidate_cache_round_trip_keeps_probabilities_and_provenance_bounded() -> None:
+    mask = np.zeros((16, 16), bool)
+    mask[2:12, 3:11] = True
+    probability = np.where(mask, 0.82, 0.03).astype(np.float32)
+    candidate = core.Candidate(
+        "q007",
+        mask,
+        0.8,
+        0.7,
+        probability,
+        presence_logit=1.386294,
+        source="seed-1/identity",
+    )
+
+    row = core.serialize_candidate(candidate, maximum_probability_bytes=2_048)
+    restored = core.deserialize_candidate(row)
+
+    assert row["schema_version"] == core.CANDIDATE_SCHEMA_VERSION
+    assert row["probability_codec"] == "q8-zlib-v1"
+    assert restored.source == "seed-1/identity"
+    assert restored.presence_logit == pytest.approx(1.386294)
+    assert np.allclose(restored.mask_probability, probability, atol=1 / 255 + 1e-6)
+
+
+def test_mask_threshold_changes_owned_pixels_using_real_probability() -> None:
+    probability = np.full((6, 6), 0.05, dtype=np.float32)
+    probability[1:5, 1:5] = 0.55
+    candidate = core.Candidate("q0", probability >= 0.5, 0.9, 0.9, probability)
+    permissive = config.AssemblyConfig(utility_threshold=0.0, minimum_area=0, mask_threshold=0.5)
+    strict = config.AssemblyConfig(utility_threshold=0.0, minimum_area=0, mask_threshold=0.6)
+
+    assert len(core.assemble_instances([candidate], recipe=permissive)) == 1
+    assert core.assemble_instances([candidate], recipe=strict) == []
+
+
+def test_diagnostics_and_block_bootstrap_fail_closed_without_comparison() -> None:
+    truth = np.zeros((8, 8), bool)
+    truth[1:5, 1:5] = True
+    candidate = core.Candidate("q0", truth, 0.9, 0.9)
+    diagnostics = core.candidate_diagnostics(
+        {"20110101000000Bh.jpeg": [candidate]},
+        {"20110101000000Bh.jpeg": [[truth]]},
+    )
+
+    assert diagnostics["raw_candidate_recall"] == 1.0
+    with pytest.raises(ValueError, match="matched control"):
+        core.paired_block_bootstrap({}, {}, blocks=(), replicates=10)
+
+
+def test_q_fit_and_q_cal_are_disjoint_and_h_cannot_enter_recipe_selection() -> None:
+    mask = np.zeros((8, 8), bool)
+    mask[1:5, 1:5] = True
+    probability = np.where(mask, 0.9, 0.01).astype(np.float32)
+    candidate = core.Candidate("q0", mask, 0.9, 0.9, probability)
+    recipe = config.AssemblyConfig(utility_threshold=0.0, minimum_area=0)
+
+    calibrator, selected, report = core.fit_and_select_q_recipe(
+        {"20110101000000Bh.jpeg": [candidate]},
+        {"20110101000000Bh.jpeg": [[mask]]},
+        {"20110201000000Bh.jpeg": [candidate]},
+        {"20110201000000Bh.jpeg": [[mask]]},
+        [recipe],
+    )
+
+    assert selected == recipe
+    assert report["selection_split"] == "Q-cal"
+    assert calibrator.membership_sha256 and calibrator.candidate_sha256
+    with pytest.raises(ValueError, match="disjoint"):
+        core.fit_and_select_q_recipe(
+            {"20110101000000Bh.jpeg": [candidate]},
+            {"20110101000000Bh.jpeg": [[mask]]},
+            {"20110101000000Bh.jpeg": [candidate]},
+            {"20110101000000Bh.jpeg": [[mask]]},
+            [recipe],
+        )

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -45,6 +47,7 @@ def build_maskdino_config(experiment: Any):
     cfg.MODEL.PIXEL_STD = [127.5]
     cfg.MODEL.BACKBONE.NAME = "build_resnet_backbone"
     cfg.MODEL.BACKBONE.FREEZE_AT = 0
+    cfg.MODEL.RESNETS.NORM = experiment.model.normalization
     cfg.MODEL.RESNETS.DEPTH = 50
     cfg.MODEL.RESNETS.STEM_OUT_CHANNELS = 64
     cfg.MODEL.RESNETS.STRIDE_IN_1X1 = False
@@ -103,6 +106,91 @@ def build_maskdino_config(experiment: Any):
     return cfg
 
 
+class QualityContractError(RuntimeError):
+    """Raised when the pinned upstream output cannot safely support E2."""
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _detectron_key_from_torchvision(key: str) -> str | None:
+    """Map the public ImageNet R50 state-dict naming onto Detectron2 ResNet."""
+    key = key.removeprefix("module.")
+    if key == "conv1.weight":
+        return "stem.conv1.weight"
+    if key.startswith("bn1."):
+        return "stem.conv1.norm." + key.removeprefix("bn1.")
+    layers = (("layer1", "res2"), ("layer2", "res3"), ("layer3", "res4"), ("layer4", "res5"))
+    for layer, res in layers:
+        if key.startswith(layer + "."):
+            result = res + key.removeprefix(layer)
+            result = result.replace(".downsample.0.", ".shortcut.")
+            result = result.replace(".downsample.1.", ".shortcut.norm.")
+            for name in ("bn1", "bn2", "bn3"):
+                result = result.replace(
+                    "." + name + ".", "." + name.replace("bn", "conv") + ".norm."
+                )
+            return result
+    return None
+
+
+def initialize_backbone_from_declared_weights(base: nn.Module, experiment: Any) -> dict[str, str]:
+    """Load only a declared local generic ImageNet R50, never downloading it.
+
+    A generic torchvision-style state dict is converted into Detectron2's
+    naming.  The RGB stem is averaged into one channel.  Missing non-classifier
+    tensors are a hard error, preventing a partially/randomly initialised model
+    from being reported as pretrained.
+    """
+    model_config = experiment.model
+    if not model_config.pretrained_backbone:
+        return {"kind": "random", "normalization": model_config.normalization}
+    path = Path(model_config.backbone_weights_path)
+    if not path.is_file() or _sha256(path) != model_config.backbone_weights_sha256:
+        raise QualityContractError(
+            "Declared ImageNet R50 weight file is unavailable or hash-mismatched"
+        )
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    source = payload.get("state_dict", payload) if isinstance(payload, Mapping) else None
+    if not isinstance(source, Mapping):
+        raise QualityContractError("Declared ImageNet R50 file has no state dictionary")
+    target = base.backbone.bottom_up.state_dict()
+    converted: dict[str, torch.Tensor] = {}
+    for source_key, value in source.items():
+        if not isinstance(value, torch.Tensor):
+            continue
+        target_key = _detectron_key_from_torchvision(str(source_key))
+        if target_key not in target:
+            continue
+        if target_key == "stem.conv1.weight":
+            if value.ndim != 4 or value.shape[1] != 3:
+                raise QualityContractError(
+                    "ImageNet R50 stem must have exactly three input channels"
+                )
+            value = value.mean(dim=1, keepdim=True)
+        if value.shape == target[target_key].shape:
+            converted[target_key] = value
+    required = {key for key in target if not key.endswith("num_batches_tracked")}
+    missing = sorted(required - set(converted))
+    if missing:
+        raise QualityContractError(
+            "Declared ImageNet R50 is not a complete compatible generic backbone; missing "
+            + ", ".join(missing[:5])
+        )
+    base.backbone.bottom_up.load_state_dict(converted, strict=True)
+    return {
+        "kind": "generic_imagenet_r50_rgb_mean_stem",
+        "path": str(path),
+        "sha256": model_config.backbone_weights_sha256,
+        "normalization": model_config.normalization,
+    }
+
+
 class PQSetFormer(nn.Module):
     """Keep upstream MaskDINO complexity behind two competition-facing methods."""
 
@@ -110,6 +198,17 @@ class PQSetFormer(nn.Module):
         super().__init__()
         self.experiment = experiment
         self.base = build_model(build_maskdino_config(experiment))
+        self.initialization_provenance = initialize_backbone_from_declared_weights(
+            self.base, experiment
+        )
+        hidden = experiment.model.hidden_dim
+        self.conditional_iou_head = nn.Sequential(
+            nn.Linear(hidden * 2, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 1),
+        )
 
     @property
     def device(self) -> torch.device:
@@ -117,7 +216,32 @@ class PQSetFormer(nn.Module):
 
     def train_batch(self, images: Sequence[Mapping[str, Any]]) -> dict[str, torch.Tensor]:
         self.train()
-        return self.base(list(images))
+        losses = self.base(list(images))
+        if self.experiment.loss.quality <= 0:
+            return losses
+        if not isinstance(losses, Mapping) or "loss_quality" not in losses:
+            raise QualityContractError(
+                "Pinned MaskDINO must expose detached matched-query conditional-IoU loss as "
+                "loss_quality; refusing the old mask-confidence proxy"
+            )
+        return dict(losses)
+
+    def conditional_iou_logits(
+        self, query_features: torch.Tensor, mask_logits: torch.Tensor, pixel_features: torch.Tensor
+    ) -> torch.Tensor:
+        """E2's detached mask-weighted pixel pooling, exposed for patched upstream use."""
+        if query_features.ndim != 3 or mask_logits.ndim != 4 or pixel_features.ndim != 4:
+            raise QualityContractError(
+                "Conditional-IoU adapter received malformed MaskDINO features"
+            )
+        weights = mask_logits.sigmoid().detach()
+        if weights.shape[-2:] != pixel_features.shape[-2:]:
+            weights = F.interpolate(
+                weights, size=pixel_features.shape[-2:], mode="bilinear", align_corners=False
+            )
+        denominator = weights.sum(dim=(-1, -2), keepdim=True).clamp_min(1e-6)
+        pooled = torch.einsum("bqhw,bchw->bqc", weights / denominator, pixel_features)
+        return self.conditional_iou_head(torch.cat((query_features, pooled), dim=-1)).squeeze(-1)
 
     @torch.no_grad()
     def predict(
@@ -141,6 +265,12 @@ class PQSetFormer(nn.Module):
         output, _ = self.base.sem_seg_head(features)
         presence = output["pred_logits"].sigmoid()[..., 0]
         mask_logits = output["pred_masks"]
+        if "pred_conditional_iou" not in output:
+            raise QualityContractError(
+                "Pinned MaskDINO inference lacks pred_conditional_iou; "
+                "E2 candidates cannot use a proxy"
+            )
+        conditional_iou = output["pred_conditional_iou"].sigmoid()
         results: list[list[dict[str, Any]]] = []
         for batch_index, (height, width) in enumerate(native_shapes):
             keep = torch.where(presence[batch_index] >= presence_floor)[0]
@@ -159,14 +289,18 @@ class PQSetFormer(nn.Module):
                     area = int(mask.sum())
                     if not area:
                         continue
-                    mask_confidence = float(probability[mask].mean())
                     candidates.append(
                         {
                             "query_id": f"q{int(query_index):03d}",
                             "presence": float(presence[batch_index, query_index]),
-                            "predicted_iou": mask_confidence,
-                            "quality_kind": "mask_confidence_proxy",
+                            "presence_logit": float(
+                                output["pred_logits"][batch_index, query_index, 0]
+                            ),
+                            "predicted_iou": float(conditional_iou[batch_index, query_index]),
+                            "quality_kind": "conditional_mask_iou",
                             "mask": mask.cpu().numpy(),
+                            "mask_probability": probability.cpu().numpy(),
+                            "source": "identity",
                         }
                     )
                 del probabilities
@@ -177,17 +311,35 @@ class PQSetFormer(nn.Module):
 
 
 def optimizer_groups(model: PQSetFormer, experiment: Any) -> list[dict[str, Any]]:
-    backbone = []
-    remaining = []
+    groups: dict[tuple[str, bool], list[torch.Tensor]] = {}
+    special_modules = (nn.modules.batchnorm._NormBase, nn.GroupNorm, nn.LayerNorm, nn.Embedding)
+    special_names = {
+        parameter_name
+        for module_name, module in model.named_modules()
+        if isinstance(module, special_modules)
+        for parameter_name, _ in module.named_parameters(prefix=module_name, recurse=False)
+    }
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             continue
-        (backbone if name.startswith("base.backbone.") else remaining).append(parameter)
-    if not backbone or not remaining:
+        bucket = "backbone" if name.startswith("base.backbone.") else "decoder"
+        no_decay = name in special_names or name.endswith(".bias")
+        groups.setdefault((bucket, no_decay), []).append(parameter)
+    if not groups.get(("backbone", False)) or not groups.get(("decoder", False)):
         raise ValueError("Could not construct distinct backbone and decoder parameter groups")
     return [
-        {"params": remaining, "lr": experiment.training.decoder_lr, "name": "decoder"},
-        {"params": backbone, "lr": experiment.training.backbone_lr, "name": "backbone"},
+        {
+            "params": parameters,
+            "lr": (
+                experiment.training.backbone_lr
+                if bucket == "backbone"
+                else experiment.training.decoder_lr
+            ),
+            "weight_decay": 0.0 if no_decay else experiment.training.weight_decay,
+            "name": f"{bucket}-{'no-decay' if no_decay else 'decay'}",
+        }
+        for (bucket, no_decay), parameters in sorted(groups.items())
+        if parameters
     ]
 
 

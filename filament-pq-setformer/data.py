@@ -141,17 +141,30 @@ def filename_for_presentation(filenames: Sequence[str], presentation: int, *, se
 
 
 def rasterize_record(record: AnnotationRecord, *, native_size: int, output_size: int) -> np.ndarray:
+    """Rasterize COCO polygons in native coordinates then resize labels.
+
+    Polygon-coordinate scaling changes the discrete ownership of thin filaments
+    at output-pixel boundaries.  Targets are labels, so nearest-neighbour is
+    deliberately used for the only resize in this path.
+    """
     if native_size <= 0 or output_size <= 0:
         raise ValueError("Raster dimensions must be positive")
-    scale = output_size / native_size
     masks = []
     for annotation in record.annotations:
         polygons = annotation.get("segmentation", [])
         if not polygons:
             raise ValueError(f"Annotation {annotation.get('id')} has no segmentation")
-        scaled = [[float(value) * scale for value in polygon] for polygon in polygons]
-        rles = coco_mask.frPyObjects(scaled, output_size, output_size)
-        mask = coco_mask.decode(coco_mask.merge(rles)).astype(bool)
+        native_rles = coco_mask.frPyObjects(polygons, native_size, native_size)
+        native_mask = coco_mask.decode(coco_mask.merge(native_rles)).astype(np.uint8)
+        if output_size == native_size:
+            mask = native_mask.astype(bool)
+        else:
+            mask = np.asarray(
+                Image.fromarray(native_mask).resize(
+                    (output_size, output_size), Image.Resampling.NEAREST
+                ),
+                dtype=bool,
+            )
         if mask.ndim != 2 or not mask.any():
             raise ValueError(f"Annotation {annotation.get('id')} rasterized empty")
         masks.append(mask)

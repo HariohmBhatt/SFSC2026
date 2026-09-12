@@ -276,7 +276,7 @@ quality_anchor = "        out = {{\\n            'pred_logits': predictions_clas
 quality_replacement = (
     "        # PQ-SetFormer E2 adapter: final matching-query features and\\n"
     "        # stride-4 pixel features stay behind the upstream decoder interface.\\n"
-    "        pq_query_features = hs[-1].transpose(0, 1)\\n"
+    "        pq_query_features = hs[-1]\\n"
     "        if mask_dict is not None:\\n"
     "            pq_query_features = pq_query_features[:, mask_dict['pad_size']:, :]\\n"
     "        out = {{\\n"

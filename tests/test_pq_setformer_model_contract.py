@@ -91,3 +91,16 @@ def test_quality_adapter_is_packaged_and_wrapper_uses_its_real_features() -> Non
     assert "mask_confidence_proxy" not in model
     assert "PQ-SetFormer E2 adapter" in controller
     assert "pred_query_features" in controller
+
+
+def test_quality_adapter_uses_b_first_decoder_features() -> None:
+    """The DINO decoder already returns hs as [B, seq, C]; never transpose again.
+
+    The original ``hs[-1].transpose(0, 1)`` reordered batch and query axes and
+    crashed the conditional-IoU head with "Expected size 92 but got size 1".
+    """
+    controller = (HERE / "run.py").read_text()
+
+    assert "pq_query_features = hs[-1]" in controller
+    assert "pq_query_features = hs[-1].transpose" not in controller
+    assert "pq_query_features[:, mask_dict['pad_size']:, :]" in controller

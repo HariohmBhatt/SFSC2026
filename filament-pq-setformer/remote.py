@@ -337,7 +337,21 @@ def infer_smoke(
     names: list[str],
     experiment: ExperimentConfig,
     checkpoint_sha256: str,
+    *,
+    candidate_presence_floor: float | None = None,
 ) -> tuple[dict, dict]:
+    """Evaluate assembled masks while retaining auditable raw candidates.
+
+    A preflight establishes runtime stability, not calibrated detection
+    quality.  It therefore captures every non-empty query mask so its
+    candidate evidence cannot disappear solely because uncalibrated presence
+    logits are below the production threshold.
+    """
+    presence_floor = (
+        experiment.assembly.presence_floor
+        if candidate_presence_floor is None
+        else candidate_presence_floor
+    )
     cache = {}
     total_tp = 0
     total_fp = 0
@@ -357,7 +371,7 @@ def infer_smoke(
         raw = network.predict(
             [item],
             [(2048, 2048)],
-            presence_floor=experiment.assembly.presence_floor,
+            presence_floor=presence_floor,
             mask_threshold=experiment.assembly.mask_threshold,
         )[0]
         candidates = [
@@ -546,6 +560,7 @@ def main() -> None:
             TASK["inference_names"],
             experiment,
             digest(checkpoint),
+            candidate_presence_floor=0.0 if run_kind == "preflight" else None,
         )
         cache_path = WORK / f"{run_kind}-candidates.json"
         write_json(cache_path, cache)

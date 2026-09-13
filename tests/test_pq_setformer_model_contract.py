@@ -62,6 +62,19 @@ def test_remote_evaluation_logs_exact_per_file_pq_breakdown() -> None:
     assert '**metrics["files"][name]' in source
 
 
+def test_remote_preflight_collects_raw_candidates_without_presence_filtering() -> None:
+    """A short stability stage must emit diagnostic candidates even if uncalibrated.
+
+    The assembly recipe remains unchanged; this only prevents the diagnostic
+    cache from disappearing because every fresh query is below the production
+    presence floor.
+    """
+    source = (HERE / "remote.py").read_text()
+
+    assert "candidate_presence_floor" in source
+    assert 'candidate_presence_floor=0.0 if run_kind == "preflight"' in source
+
+
 def test_remote_releases_training_model_before_checkpoint_reload() -> None:
     source = (HERE / "remote.py").read_text()
 

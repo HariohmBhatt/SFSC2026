@@ -94,6 +94,16 @@ def test_remote_amp_overflow_backs_off_and_still_requires_five_updates() -> None
     assert '"attempted_microbatches"' in source
 
 
+def test_remote_exposes_clean_notebook_progress_and_epoch_telemetry() -> None:
+    source = (HERE / "remote.py").read_text()
+
+    assert "from tqdm.auto import tqdm" in source
+    assert "warnings.filterwarnings(" in source
+    assert "progress.set_postfix" in source
+    assert '"epoch_complete"' in source
+    assert "completed_epoch > reported_epoch" in source
+
+
 def test_quality_adapter_is_packaged_and_wrapper_uses_its_real_features() -> None:
     model = (HERE / "model.py").read_text()
     controller = (HERE / "run.py").read_text()

@@ -11,6 +11,7 @@ import os
 import platform
 import random
 import time
+import warnings
 from pathlib import Path
 
 import core
@@ -22,11 +23,27 @@ import torch
 from config import ExperimentConfig
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 WORK = Path("/kaggle/working/pq-setformer")
 TASK = json.loads(Path("/kaggle/working/task-config.json").read_text())
 AMP_INITIAL_SCALE = 16.0
 MAX_AMP_OVERFLOWS = 4
+
+# These are upstream compatibility notices, not training faults.  Suppress
+# only the two known noisy call sites so real warnings and exceptions remain
+# visible in the Kaggle notebook.
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r"torch\.meshgrid: in an upcoming release.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r"`torch\.cuda\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
+    module=r"maskdino\.modeling\.matcher",
+)
 
 
 def write_json(path: Path, value) -> None:
@@ -216,6 +233,15 @@ def train_smoke(
     last_loss = None
     last_record = None
     optimizer_started = time.monotonic()
+    images_per_epoch = len(loader.dataset.filenames)
+    epoch_started = started
+    reported_epoch = 0
+    progress = tqdm(
+        total=target_steps,
+        desc="PQ train",
+        unit="update",
+        dynamic_ncols=True,
+    )
     for microbatch, batch in enumerate(loader, 1):
         attempted_microbatches = microbatch
         last_record = {
@@ -294,6 +320,38 @@ def train_smoke(
             "epoch_equivalent": microbatch / len(loader.dataset.filenames),
         }
         logger.log("optimizer_step", step=optimizer_step, **metrics)
+        remaining_seconds = (
+            (target_steps - optimizer_step) * (time.monotonic() - started) / max(optimizer_step, 1)
+        )
+        progress.update(1)
+        progress.set_postfix(
+            epoch=f"{microbatch / images_per_epoch:.2f}",
+            file=last_record["filename"],
+            loss=f"{scalar_loss:.4f}",
+            memory=f"{memory_reserved:.2f}G",
+            eta=f"{remaining_seconds / 60:.1f}m",
+        )
+        completed_epoch = microbatch // images_per_epoch
+        if completed_epoch > reported_epoch:
+            epoch = completed_epoch
+            epoch_seconds = time.monotonic() - epoch_started
+            logger.log(
+                "epoch_complete",
+                step=optimizer_step,
+                **{
+                    "epoch": epoch,
+                    "epoch/seconds": epoch_seconds,
+                    "epoch/loss": scalar_loss,
+                    "epoch/images": images_per_epoch,
+                    "epoch/eta_seconds": remaining_seconds,
+                },
+            )
+            progress.write(
+                f"epoch={epoch} time={epoch_seconds / 60:.2f}m "
+                f"loss={scalar_loss:.4f} eta={remaining_seconds / 60:.1f}m"
+            )
+            epoch_started = time.monotonic()
+            reported_epoch = epoch
         write_json(
             WORK / "progress.json",
             {
@@ -309,6 +367,7 @@ def train_smoke(
         if optimizer_step == target_steps:
             break
 
+    progress.close()
     if optimizer_step != target_steps or last_loss is None:
         raise RuntimeError("Training did not execute the declared optimizer-step count")
     return (

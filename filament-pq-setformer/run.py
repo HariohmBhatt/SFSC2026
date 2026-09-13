@@ -172,8 +172,8 @@ def prepare(
         previous = json.loads(record_path.read_text())
         if previous.get("status") not in TERMINAL_STATUSES:
             raise RuntimeError("An existing PQ-SetFormer run is active")
-    if run_kind not in {"smoke", "pilot"}:
-        raise ValueError("run_kind must be 'smoke' or 'pilot'")
+    if run_kind not in {"smoke", "preflight", "pilot"}:
+        raise ValueError("run_kind must be 'smoke', 'preflight', or 'pilot'")
 
     legacy = frozen_split()
     if {name: len(values) for name, values in legacy.items()} != {
@@ -205,13 +205,15 @@ def prepare(
     # Pilot H is one-shot promotion evidence.  It cannot be placed in the
     # train/infer task that creates Q-fit/Q-cal calibration artifacts.
     inference_names = (
-        training_names[:2] if run_kind == "smoke" else split.quality_fit + split.quality_calibration
+        training_names[:2]
+        if run_kind in {"smoke", "preflight"}
+        else split.quality_fit + split.quality_calibration
     )
-    training_microbatches = (
-        experiment.training.smoke_microbatches
-        if run_kind == "smoke"
-        else experiment.training.target_microbatches
-    )
+    training_microbatches = {
+        "smoke": experiment.training.smoke_microbatches,
+        "preflight": experiment.training.preflight_microbatches,
+        "pilot": experiment.training.target_microbatches,
+    }[run_kind]
     membership = {
         "training_names": training_names,
         "inference_names": inference_names,
@@ -1043,9 +1045,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--run-kind",
-        choices=("smoke", "pilot"),
+        choices=("smoke", "preflight", "pilot"),
         default="smoke",
-        help="Run a short hardware smoke or the frozen 6,000-microbatch E1 pilot",
+        help="Run a short smoke, 200-update preflight, or frozen 6,000-microbatch E1 pilot",
     )
     arguments = parser.parse_args()
     if arguments.command == "prepare":

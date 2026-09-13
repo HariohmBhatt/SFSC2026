@@ -432,12 +432,15 @@ def main() -> None:
     if experiment.sha256 != TASK["config_sha256"]:
         raise ValueError("Experiment config hash mismatch")
     run_kind = TASK["run_kind"]
-    expected_microbatches = (
-        experiment.training.smoke_microbatches
-        if run_kind == "smoke"
-        else experiment.training.target_microbatches
-    )
-    if run_kind not in {"smoke", "pilot"} or TASK["training_microbatches"] != expected_microbatches:
+    expected_microbatches = {
+        "smoke": experiment.training.smoke_microbatches,
+        "preflight": experiment.training.preflight_microbatches,
+        "pilot": experiment.training.target_microbatches,
+    }.get(run_kind)
+    if (
+        run_kind not in {"smoke", "preflight", "pilot"}
+        or TASK["training_microbatches"] != expected_microbatches
+    ):
         raise ValueError("Frozen run kind and training schedule disagree")
     seed_everything(experiment.training.seed)
     gpu = gpu_preflight()

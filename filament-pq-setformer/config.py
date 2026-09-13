@@ -114,6 +114,7 @@ class TrainingConfig:
     accumulation: int = 4
     target_microbatches: int = 6_000
     smoke_microbatches: int = 20
+    preflight_microbatches: int = 800
     decoder_lr: float = 1e-4
     backbone_lr: float = 1e-5
     weight_decay: float = 0.05
@@ -126,8 +127,10 @@ class TrainingConfig:
     def __post_init__(self) -> None:
         if self.physical_batch != 1 or self.accumulation < 1:
             raise ValueError("P100 training requires physical batch 1 and positive accumulation")
-        if self.target_microbatches < self.accumulation:
-            raise ValueError("target_microbatches must reach an optimizer step")
+        for name in ("target_microbatches", "smoke_microbatches", "preflight_microbatches"):
+            value = getattr(self, name)
+            if value < self.accumulation or value % self.accumulation:
+                raise ValueError(f"{name} must contain whole optimizer updates")
         for name in ("decoder_lr", "backbone_lr", "weight_decay", "gradient_clip"):
             _require_number(name, getattr(self, name), 0.0, 1.0)
         if self.workers not in {2, 4, 6}:

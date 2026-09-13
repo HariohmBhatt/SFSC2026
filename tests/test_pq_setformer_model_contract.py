@@ -50,6 +50,8 @@ def test_remote_training_uses_safe_amp_accumulation_and_gradient_clipping() -> N
     assert "ExperimentLogger.start" in source
     assert "MSDeformAttnFunction.apply" in source
     assert "custom_op_forward_backward" in source
+    assert 'run_kind not in {"smoke", "preflight", "pilot"}' in source
+    assert "experiment.training.preflight_microbatches" in source
 
 
 def test_remote_evaluation_logs_exact_per_file_pq_breakdown() -> None:

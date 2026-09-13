@@ -123,6 +123,22 @@ def test_prepare_freezes_full_e1_pilot_schedule_and_assessment(tmp_path) -> None
     assert record["automatic_submission"] is False
 
 
+def test_prepare_freezes_extended_preflight_at_two_hundred_optimizer_updates(tmp_path) -> None:
+    record = runner.prepare(
+        record_path=tmp_path / "record.json",
+        outputs_root=tmp_path / "outputs",
+        run_id="20260913-120000",
+        run_kind="preflight",
+    )
+
+    assert record["stage"] == "E1-preflight-1024"
+    assert record["training_microbatches"] == 800
+    assert (
+        record["training_microbatches"] // record["experiment"]["training"]["accumulation"] == 200
+    )
+    assert len(record["inference_names"]) == 2
+
+
 def test_prepare_rejects_unknown_run_kind(tmp_path) -> None:
     with pytest.raises(ValueError, match="run_kind"):
         runner.prepare(

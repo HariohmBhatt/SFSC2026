@@ -48,11 +48,17 @@ the environment. Kaggle does not expose live stdout/stderr during execution;
 the relay reports live status and forwards the complete logger event stream on
 the terminal artifact fetch.
 
-After a successful 1024 smoke, prepare the measured-safe resolution preflight
-explicitly, for example:
+After a successful 1024 smoke, first run the required 200-update AMP preflight:
 
 ```bash
-uv run python filament-pq-setformer/run.py prepare --input-size 1216
+uv run python filament-pq-setformer/run.py prepare --run-kind preflight --input-size 1024
+uv run python filament-pq-setformer/run.py run
+```
+
+Then repeat that preflight only at a measured-safe higher resolution, for example:
+
+```bash
+uv run python filament-pq-setformer/run.py prepare --run-kind preflight --input-size 1216
 uv run python filament-pq-setformer/run.py run
 ```
 

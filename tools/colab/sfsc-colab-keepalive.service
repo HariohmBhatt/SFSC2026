@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep the SFSC Colab kernel busy while Drive training runs
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/SFSC2026
+ExecStart=%h/.local/bin/colab --auth oauth2 exec -s sfsc-ultimate-v1 -f %h/SFSC2026/tools/colab/keepalive_training.py --timeout 86400
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

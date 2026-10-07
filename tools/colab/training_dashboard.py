@@ -17,7 +17,7 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_LOG = Path("outputs/ultimate-ensemble-v1/training-live.log")
@@ -413,6 +413,63 @@ def current_pipeline_events(
     return events
 
 
+def structured_eta_rows(
+    events: Sequence[dict[str, object]],
+    progress: dict[str, object],
+    config: dict[str, object],
+) -> list[str]:
+    phase = progress.get("phase")
+    unit = progress.get("unit")
+    if phase != "refiners" or not isinstance(unit, str):
+        return []
+    starts = [
+        event
+        for event in events
+        if event.get("phase") == phase
+        and event.get("unit") == unit
+        and event.get("event") == "unit_start"
+    ]
+    completed_epochs = [
+        event
+        for event in events
+        if event.get("phase") == phase
+        and event.get("unit") == unit
+        and event.get("event") == "epoch_complete"
+        and isinstance(event.get("time"), str)
+    ]
+    if not starts or not completed_epochs or not isinstance(starts[-1].get("time"), str):
+        return []
+    previous = datetime.fromisoformat(str(starts[-1]["time"]))
+    durations = []
+    for event in completed_epochs:
+        finished = datetime.fromisoformat(str(event["time"]))
+        durations.append((finished - previous).total_seconds())
+        previous = finished
+    recent = durations[-8:]
+    epoch_seconds = sum(recent) / len(recent)
+    now = datetime.now(previous.tzinfo or UTC)
+    elapsed = max((now - previous).total_seconds(), 0.0)
+    epoch = int(progress.get("epoch", 0))
+    epochs = int(progress.get("epochs", config.get("refiner_epochs", 0)))
+    remaining = max(epoch_seconds - elapsed, 0.0) + max(epochs - epoch, 0) * epoch_seconds
+    unit_index = int(progress.get("unit_index", 1))
+    unit_total = int(
+        progress.get(
+            "unit_total",
+            len(config.get("refiner_backbones", [])) * int(config.get("refiner_folds", 0)),
+        )
+    )
+    stage_remaining = remaining + max(unit_total - unit_index, 0) * epochs * epoch_seconds
+    item_finish = datetime.fromtimestamp(time.time() + remaining, IST)
+    stage_finish = datetime.fromtimestamp(time.time() + stage_remaining, IST)
+    return [
+        f"  Current refiner ETA {precise_duration(remaining)}  •  "
+        f"estimated finish {item_finish:%H:%M:%S IST}",
+        f"  Refiner stage ETA   {precise_duration(stage_remaining)}  •  "
+        f"estimated finish {stage_finish:%H:%M:%S IST}",
+    ]
+
+
 def pipeline_lines(
     state: DashboardState,
     config: dict[str, object],
@@ -544,6 +601,7 @@ def pipeline_lines(
             details.append(f"train loss {float(progress['train_loss']):.4f}")
         if details:
             rows.append("  " + "  •  ".join(details))
+        rows.extend(structured_eta_rows(events, progress, config))
     return rows
 
 

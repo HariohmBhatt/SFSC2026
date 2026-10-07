@@ -181,23 +181,49 @@ def train_detectors(
 
     outputs = []
     for index, detector in enumerate(config["detectors"]):
-        detector_train, detector_validation = inner_detector_split(
-            split["train"], index, int(config["seed"])
-        )
-        dataset = write_yolo_dataset(
-            data_root,
-            coco,
-            detector_train,
-            detector_validation,
-            paths.scratch / "yolo" / f"detector{index}",
-        )
         name = f"detector-{index}-{Path(detector['model']).stem}"
         directory = paths.checkpoints / "detectors" / name
         best = directory / "weights/best.pt"
         complete = directory / "complete.json"
         if best.is_file() and complete.is_file():
+            emit_progress(
+                "unit_complete",
+                phase="detectors",
+                unit=name,
+                unit_index=index + 1,
+                unit_total=len(config["detectors"]),
+                skipped=True,
+            )
             outputs.append(best)
             continue
+        detector_train, detector_validation = inner_detector_split(
+            split["train"], index, int(config["seed"])
+        )
+        dataset_root = paths.scratch / "yolo" / f"detector{index}"
+        dataset = dataset_root / "data.yaml"
+        required = (
+            dataset,
+            dataset_root / "train/images",
+            dataset_root / "train/labels",
+            dataset_root / "val/images",
+            dataset_root / "val/labels",
+        )
+        if not all(path.exists() for path in required):
+            dataset = write_yolo_dataset(
+                data_root,
+                coco,
+                detector_train,
+                detector_validation,
+                dataset_root,
+            )
+        emit_progress(
+            "unit_start",
+            phase="detectors",
+            unit=name,
+            unit_index=index + 1,
+            unit_total=len(config["detectors"]),
+            resumed=(directory / "weights/last.pt").is_file(),
+        )
         last = directory / "weights/last.pt"
         model = YOLO(str(last) if last.is_file() else detector["model"])
         arguments = dict(
@@ -238,6 +264,13 @@ def train_detectors(
         model.train(resume=True) if last.is_file() else model.train(**arguments)
         best = Path(model.trainer.best)
         write_json(complete, {"status": "complete", "sha256": sha256(best)})
+        emit_progress(
+            "unit_complete",
+            phase="detectors",
+            unit=name,
+            unit_index=index + 1,
+            unit_total=len(config["detectors"]),
+        )
         outputs.append(best)
     return outputs
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Mirror the active SFSC Colab training log locally
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/SFSC2026
+ExecStart=/usr/bin/python3 %h/SFSC2026/tools/colab/sync_training_log.py --interval 10
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -238,15 +238,22 @@ def sampled(values: Sequence[float], width: int) -> list[float]:
     return [values[round(index * (len(values) - 1) / (width - 1))] for index in range(width)]
 
 
-def sparkline(values: Sequence[float], width: int) -> str:
+def sparkline(
+    values: Sequence[float],
+    width: int,
+    axis: tuple[float, float] | None = None,
+) -> str:
     if not values:
         return "(waiting for a completed epoch)"
     rows = sampled(values, max(1, width))
-    low, high = min(rows), max(rows)
+    low, high = axis or (min(rows), max(rows))
     if high == low:
         return "▄" * len(rows)
     glyphs = "▁▂▃▄▅▆▇█"
-    return "".join(glyphs[round((value - low) / (high - low) * 7)] for value in rows)
+    return "".join(
+        glyphs[round(min(1.0, max(0.0, (value - low) / (high - low))) * 7)]
+        for value in rows
+    )
 
 
 def trend(values: Sequence[float]) -> str:
@@ -263,11 +270,14 @@ def metric_row(
     graph_width: int,
     palette: Palette,
     color: str,
+    axis: tuple[float, float] | None = None,
 ) -> str:
     if not values:
         return f"  {label:<10} {'--':>8}  {palette.dim('(waiting for data)')}"
-    plot = palette.paint(sparkline(values, graph_width), color)
-    return f"  {label:<14} {values[-1]:>8.4f}  {plot}  {trend(values):>9}"
+    low, high = axis or (min(values), max(values))
+    plot = palette.paint(sparkline(values, graph_width, (low, high)), color)
+    y_axis = palette.dim(f"y[{low:.3f},{high:.3f}]")
+    return f"  {label:<14} {values[-1]:>8.4f}  {plot}  {y_axis}  {trend(values):>9}"
 
 
 def render(
@@ -275,7 +285,7 @@ def render(
 ) -> str:
     palette = Palette(color)
     width = max(72, width)
-    graph_width = max(16, min(64, width - 36))
+    graph_width = max(12, min(48, width - 58))
     divider = "─" * min(width, 110)
     age = time.time() - state.modified_at
     freshness = palette.green("LIVE") if age < 15 else palette.red(f"STALE {compact_age(age)}")
@@ -327,7 +337,7 @@ def render(
             divider,
             palette.bold("LOSS HISTORY")
             + palette.dim(
-                "  latest running average • graph per epoch • change since first local epoch"
+                "  latest running average • observed y-axis • change since first local epoch"
             ),
         ]
     )
@@ -349,7 +359,13 @@ def render(
         )
     )
 
-    lines.extend([divider, palette.bold("VALIDATION HISTORY")])
+    lines.extend(
+        [
+            divider,
+            palette.bold("VALIDATION HISTORY")
+            + palette.dim("  observed y-axis for readable trend detail"),
+        ]
+    )
     validation_epochs = sorted(run.validations)
     map50 = [run.validations[epoch].mask_map50 for epoch in validation_epochs]
     map5095 = [run.validations[epoch].mask_map for epoch in validation_epochs]

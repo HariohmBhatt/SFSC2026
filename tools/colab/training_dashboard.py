@@ -17,6 +17,7 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_LOG = Path("outputs/ultimate-ensemble-v1/training-live.log")
@@ -46,6 +47,10 @@ VALIDATION_RE = re.compile(
     r"(?P<mask_p>[-+\d.eE]+)\s+(?P<mask_r>[-+\d.eE]+)\s+"
     r"(?P<mask_map50>[-+\d.eE]+)\s+(?P<mask_map>[-+\d.eE]+)\s*$"
 )
+VALIDATION_TIMING_RE = re.compile(
+    r"^\s*Class\s+Images.*?:\s+100%.*?\s(?P<elapsed>(?:\d+:)?\d+(?:\.\d+)?s)\s*$"
+)
+IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,7 @@ class TrainingRun:
     name: str
     points: dict[int, TrainPoint] = field(default_factory=dict)
     validations: dict[int, ValidationPoint] = field(default_factory=dict)
+    validation_durations: list[float] = field(default_factory=list)
     current: TrainPoint | None = None
     last_completed_epoch: int | None = None
 
@@ -173,6 +179,21 @@ def validation_point(match: re.Match[str], epoch: int) -> ValidationPoint:
     )
 
 
+def duration_seconds(value: str) -> float:
+    value = value.removesuffix("s")
+    parts = value.split(":")
+    try:
+        if len(parts) == 1:
+            return float(parts[0])
+        if len(parts) == 2:
+            return float(parts[0]) * 60 + float(parts[1])
+        if len(parts) == 3:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+    except ValueError:
+        return 0.0
+    return 0.0
+
+
 def parse_log(path: Path) -> DashboardState:
     stat = path.stat()
     content = path.read_bytes().decode("utf-8", errors="replace").replace("\r", "\n")
@@ -237,6 +258,13 @@ def parse_log(path: Path) -> DashboardState:
             epoch = run.last_completed_epoch
             if epoch is not None:
                 run.validations[epoch] = validation_point(match, epoch)
+            continue
+
+        match = VALIDATION_TIMING_RE.match(line)
+        if match and runs:
+            elapsed = duration_seconds(match.group("elapsed"))
+            if elapsed > 0:
+                runs[-1].validation_durations.append(elapsed)
 
     return DashboardState(tuple(runs), tuple(events), stat.st_mtime, stat.st_size)
 
@@ -250,6 +278,38 @@ def compact_age(seconds: float) -> str:
         return f"{minutes}m {seconds:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h {minutes:02d}m"
+
+
+def precise_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
+def item_eta(run: TrainingRun) -> tuple[float, float] | None:
+    current = run.current
+    if current is None or not current.rate:
+        return None
+    training_epoch = current.batches / current.rate
+    validation = (
+        sum(run.validation_durations[-10:]) / len(run.validation_durations[-10:])
+        if run.validation_durations
+        else max(5.0, training_epoch * 0.06)
+    )
+    checkpoint_overhead = 4.0
+    current_training = max(current.batches - current.batch, 0) / current.rate
+    epochs_after_current = max(current.epochs - current.epoch, 0)
+    remaining = current_training + (epochs_after_current + 1) * (
+        validation + checkpoint_overhead
+    )
+    remaining += epochs_after_current * training_epoch
+    full_item = current.epochs * (training_epoch + validation + checkpoint_overhead)
+    return remaining, full_item
 
 
 def progress_bar(fraction: float, width: int) -> str:
@@ -568,6 +628,31 @@ def render(
     epoch_fraction = current.batch / max(current.batches, 1)
     overall = ((current.epoch - 1) + epoch_fraction) / max(current.epochs, 1)
     bar_width = max(20, min(62, width - 34))
+    eta = item_eta(run)
+    eta_lines: list[str] = []
+    if eta is not None:
+        remaining, full_item = eta
+        item_finish = datetime.fromtimestamp(time.time() + remaining, IST)
+        eta_lines.append(
+            f"Current item ETA {precise_duration(remaining)}  •  "
+            f"estimated finish {item_finish:%H:%M:%S IST}"
+        )
+        if run.name.startswith("fold") and selected_run == len(state.runs):
+            events = current_pipeline_events(state.events)
+            completed_prompts = {
+                str(event.get("unit"))
+                for event in events
+                if event.get("phase") == "prompts"
+                and event.get("event") == "unit_complete"
+            }
+            prompt_total = int(config.get("prompt_oof_folds", 0))
+            later_folds = max(prompt_total - len(completed_prompts) - 1, 0)
+            stage_remaining = remaining + later_folds * full_item
+            stage_finish = datetime.fromtimestamp(time.time() + stage_remaining, IST)
+            eta_lines.append(
+                f"OOF stage ETA    {precise_duration(stage_remaining)}  •  "
+                f"estimated finish {stage_finish:%H:%M:%S IST}"
+            )
     lines.extend(
         [
             f"Run {selected_run}/{len(state.runs)}  {palette.bold(run.name)}",
@@ -580,6 +665,7 @@ def render(
                 f"{current.batch}/{current.batches} ({current.percent}%)  •  "
                 f"{current.rate or 0:.1f} it/s  •  epoch ETA {current.remaining or '--'}"
             ),
+            *eta_lines,
             (
                 f"GPU {current.gpu}  •  image {current.size}²  •  "
                 f"instances in batch {current.instances}  •  log age {compact_age(age)}"

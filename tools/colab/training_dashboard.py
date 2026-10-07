@@ -8,6 +8,8 @@ SSH session, or write to the training directory.
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import re
 import shutil
 import signal
@@ -18,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_LOG = Path("outputs/ultimate-ensemble-v1/training-live.log")
+DEFAULT_CONFIG = Path("filament_ensemble/config.json")
+PROGRESS_PREFIX = "SFSC_PROGRESS "
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 TRAINER_NAME_RE = re.compile(r"(?:^|,\s*)name=([^,\s]+)")
 TRAIN_RE = re.compile(
@@ -67,6 +71,8 @@ class TrainPoint:
 @dataclass(frozen=True)
 class ValidationPoint:
     epoch: int
+    images: int
+    instances: int
     box_p: float
     box_r: float
     box_map50: float
@@ -89,6 +95,7 @@ class TrainingRun:
 @dataclass(frozen=True)
 class DashboardState:
     runs: tuple[TrainingRun, ...]
+    events: tuple[dict[str, object], ...]
     modified_at: float
     byte_count: int
 
@@ -153,6 +160,8 @@ def validation_point(match: re.Match[str], epoch: int) -> ValidationPoint:
     values = match.groupdict()
     return ValidationPoint(
         epoch=epoch,
+        images=int(values["images"]),
+        instances=int(values["instances"]),
         box_p=float(values["box_p"]),
         box_r=float(values["box_r"]),
         box_map50=float(values["box_map50"]),
@@ -168,10 +177,35 @@ def parse_log(path: Path) -> DashboardState:
     stat = path.stat()
     content = path.read_bytes().decode("utf-8", errors="replace").replace("\r", "\n")
     runs: list[TrainingRun] = []
+    events: list[dict[str, object]] = []
     pending_name: str | None = None
 
     for raw_line in content.splitlines():
         line = clean_line(raw_line)
+        if line.startswith(PROGRESS_PREFIX):
+            try:
+                event = json.loads(line.removeprefix(PROGRESS_PREFIX))
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(event, dict):
+                    events.append(event)
+            continue
+        if line.startswith("{") and '"event": "validation_image"' in line:
+            try:
+                legacy = json.loads(line)
+            except json.JSONDecodeError:
+                pass
+            else:
+                events.append(
+                    {
+                        **legacy,
+                        "event": "progress",
+                        "phase": "validate",
+                        "current": legacy.get("index", 0),
+                    }
+                )
+            continue
         if "engine/trainer:" in line:
             match = TRAINER_NAME_RE.search(line)
             if match:
@@ -204,7 +238,7 @@ def parse_log(path: Path) -> DashboardState:
             if epoch is not None:
                 run.validations[epoch] = validation_point(match, epoch)
 
-    return DashboardState(tuple(runs), stat.st_mtime, stat.st_size)
+    return DashboardState(tuple(runs), tuple(events), stat.st_mtime, stat.st_size)
 
 
 def compact_age(seconds: float) -> str:
@@ -280,8 +314,221 @@ def metric_row(
     return f"  {label:<14} {values[-1]:>8.4f}  {plot}  {y_axis}  {trend(values):>9}"
 
 
+def completed(run: TrainingRun) -> bool:
+    point = run.current
+    return bool(point and point.epoch >= point.epochs and point.batch >= point.batches)
+
+
+def latest_phase_event_with(
+    events: Sequence[dict[str, object]], phase: str, field: str
+) -> dict[str, object]:
+    return next(
+        (
+            event
+            for event in reversed(events)
+            if event.get("phase") == phase and event.get(field) is not None
+        ),
+        {},
+    )
+
+
+def active_phase(events: Sequence[dict[str, object]]) -> str | None:
+    active: str | None = None
+    for event in events:
+        kind = event.get("event")
+        phase = event.get("phase")
+        if kind == "phase_start" and isinstance(phase, str):
+            active = phase
+        elif kind == "phase_complete" and phase == active:
+            active = None
+    return active
+
+
+def current_pipeline_events(
+    events: Sequence[dict[str, object]],
+) -> Sequence[dict[str, object]]:
+    for index in range(len(events) - 1, -1, -1):
+        if events[index].get("event") == "pipeline_start":
+            return events[index:]
+    return events
+
+
+def pipeline_lines(
+    state: DashboardState,
+    config: dict[str, object],
+    width: int,
+    palette: Palette,
+) -> list[str]:
+    events = current_pipeline_events(state.events)
+    detector_total = len(config.get("detectors", []))
+    prompt_total = int(config.get("prompt_oof_folds", 0))
+    refiner_total = len(config.get("refiner_backbones", [])) * int(
+        config.get("refiner_folds", 0)
+    )
+    semantic_total = int(config.get("semantic_epochs", 0))
+    production = [run for run in state.runs if run.name.startswith("detector-")]
+    prompts = [run for run in state.runs if run.name.startswith("fold")]
+    detector_done = min(detector_total, sum(completed(run) for run in production))
+    prompt_done = min(prompt_total, sum(completed(run) for run in prompts))
+
+    complete_phases = {
+        str(event.get("phase"))
+        for event in events
+        if event.get("event") == "phase_complete"
+    }
+    if "detectors" in complete_phases:
+        detector_done = detector_total
+    prompt_units = {
+        str(event.get("unit"))
+        for event in events
+        if event.get("phase") == "prompts" and event.get("event") == "unit_complete"
+    }
+    prompt_done = min(prompt_total, max(prompt_done, len(prompt_units)))
+    if "prompts" in complete_phases:
+        prompt_done = prompt_total
+    refiner_units = {
+        str(event.get("unit"))
+        for event in events
+        if event.get("phase") == "refiners" and event.get("event") == "unit_complete"
+    }
+    semantic_event = latest_phase_event_with(events, "semantic", "epoch")
+    validation_event = latest_phase_event_with(events, "validate", "current")
+    semantic_epoch = int(semantic_event.get("epoch", 0))
+    validation_current = int(validation_event.get("current", 0))
+    validation_total = int(validation_event.get("total", 0)) or int(
+        config.get("_validation_total", 0)
+    )
+
+    structured_active = active_phase(events)
+    inferred_active = structured_active
+    if inferred_active is None:
+        if validation_event:
+            inferred_active = "validate"
+        elif detector_done < detector_total:
+            inferred_active = "detectors"
+        elif prompt_done < prompt_total:
+            inferred_active = "prompts"
+        elif prompt_total and prompt_done >= prompt_total:
+            inferred_active = "refiners"
+
+    def marker(phase: str, done: bool) -> str:
+        if done:
+            return palette.green("✓")
+        if inferred_active == phase:
+            return palette.yellow("▶")
+        return palette.dim("○")
+
+    rows = [palette.bold("PIPELINE PROGRESS")]
+    rows.append(
+        f"  {marker('detectors', detector_done >= detector_total > 0)} "
+        f"Production detectors  {detector_done}/{detector_total} complete"
+    )
+    rows.append(
+        f"  {marker('prompts', prompt_done >= prompt_total > 0 or 'prompts' in complete_phases)} "
+        f"OOF prompt detectors  {prompt_done}/{prompt_total} complete"
+    )
+    rows.append(
+        f"  {marker('refiners', 'refiners' in complete_phases)} "
+        f"Prompt refiners       {len(refiner_units)}/{refiner_total} complete"
+    )
+    rows.append(
+        f"  {marker('semantic', 'semantic' in complete_phases)} "
+        f"Semantic proposal     epoch {semantic_epoch}/{semantic_total}"
+    )
+    rows.append(
+        f"  {marker('validate', 'validate' in complete_phases)} "
+        f"Exact-PQ validation   image {validation_current}/{validation_total or '?'}"
+    )
+    failure = next(
+        (event for event in reversed(events) if event.get("event") == "pipeline_failed"),
+        None,
+    )
+    if failure:
+        rows.append(palette.red(f"  Pipeline failure: {failure.get('error', 'unknown error')}"))
+
+    progress = next(
+        (
+            event
+            for event in reversed(events)
+            if event.get("event") == "progress"
+            and isinstance(event.get("current"), (int, float))
+            and isinstance(event.get("total"), (int, float))
+        ),
+        None,
+    )
+    if progress and progress.get("phase") == structured_active:
+        current = float(progress["current"])
+        total = max(float(progress["total"]), 1.0)
+        fraction = current / total
+        bar_width = max(16, min(48, width - 38))
+        detail = str(progress.get("unit") or progress.get("filename") or "")
+        rows.extend(
+            [
+                "",
+                (
+                    f"  {palette.cyan(progress_bar(fraction, bar_width))} "
+                    f"{fraction * 100:6.2f}%  {detail}"
+                ),
+            ]
+        )
+        epoch = progress.get("epoch")
+        epochs = progress.get("epochs")
+        step = progress.get("step")
+        steps = progress.get("steps")
+        details = []
+        if epoch is not None and epochs is not None:
+            details.append(f"epoch {epoch}/{epochs}")
+        if step is not None and steps is not None:
+            details.append(f"step {step}/{steps}")
+        if progress.get("train_loss") is not None:
+            details.append(f"train loss {float(progress['train_loss']):.4f}")
+        if details:
+            rows.append("  " + "  •  ".join(details))
+    return rows
+
+
+def structured_metric_lines(
+    state: DashboardState, width: int, palette: Palette
+) -> list[str]:
+    events = current_pipeline_events(state.events)
+    phase = active_phase(events)
+    if phase not in {"refiners", "semantic"}:
+        return []
+    epoch_events = [
+        event
+        for event in events
+        if event.get("phase") == phase and event.get("event") == "epoch_complete"
+    ]
+    if not epoch_events:
+        return []
+    latest_unit = epoch_events[-1].get("unit")
+    if latest_unit is not None:
+        epoch_events = [event for event in epoch_events if event.get("unit") == latest_unit]
+    graph_width = max(12, min(48, width - 58))
+    train_losses = [float(event["train_loss"]) for event in epoch_events]
+    validation_losses = [
+        float(event["validation_loss"])
+        for event in epoch_events
+        if event.get("validation_loss") is not None
+    ]
+    rows = [
+        "",
+        palette.bold("CURRENT STAGE METRICS")
+        + palette.dim(f"  {phase} • {latest_unit or 'full-disk'}"),
+        metric_row("train loss", train_losses, graph_width, palette, "35"),
+    ]
+    if validation_losses:
+        rows.append(metric_row("validation loss", validation_losses, graph_width, palette, "36"))
+    return rows
+
+
 def render(
-    state: DashboardState, path: Path, width: int, color: bool, run_number: int | None = None
+    state: DashboardState,
+    path: Path,
+    width: int,
+    color: bool,
+    config: dict[str, object],
+    run_number: int | None = None,
 ) -> str:
     palette = Palette(color)
     width = max(72, width)
@@ -294,6 +541,9 @@ def render(
         palette.dim(f"local source: {path}  •  {state.byte_count / 1_048_576:.1f} MiB"),
         divider,
     ]
+    lines.extend(pipeline_lines(state, config, width, palette))
+    lines.extend(structured_metric_lines(state, width, palette))
+    lines.append(divider)
 
     if run_number is not None and not 1 <= run_number <= len(state.runs):
         lines.append(
@@ -401,6 +651,12 @@ def arguments() -> argparse.Namespace:
     )
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG, help="local log file to read")
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG,
+        help="pipeline configuration used for expected stage counts",
+    )
+    parser.add_argument(
         "--refresh", type=float, default=1.0, help="screen refresh interval in seconds (default: 1)"
     )
     parser.add_argument("--once", action="store_true", help="render once and exit")
@@ -416,10 +672,20 @@ def arguments() -> argparse.Namespace:
 def main() -> int:
     args = arguments()
     path = args.log.expanduser().resolve()
+    config_path = args.config.expanduser().resolve()
     if args.refresh <= 0:
         raise SystemExit("--refresh must be greater than zero")
     if not path.is_file():
         raise SystemExit(f"Log file does not exist: {path}")
+    if not config_path.is_file():
+        raise SystemExit(f"Pipeline config does not exist: {config_path}")
+    config = json.loads(config_path.read_text())
+    split_manifest = config_path.parent.parent / str(config.get("split_manifest", ""))
+    if split_manifest.is_file():
+        with split_manifest.open(newline="") as stream:
+            config["_validation_total"] = sum(
+                row.get("split") == "validation" for row in csv.DictReader(stream)
+            )
 
     interactive = sys.stdout.isatty() and not args.once
     color = sys.stdout.isatty() and not args.no_color
@@ -441,7 +707,7 @@ def main() -> int:
             try:
                 state = parse_log(path)
                 terminal_width = shutil.get_terminal_size((110, 30)).columns
-                screen = render(state, path, terminal_width, color, args.run)
+                screen = render(state, path, terminal_width, color, config, args.run)
             except (OSError, UnicodeError) as error:
                 screen = f"Could not read {path}: {error}"
             if interactive:

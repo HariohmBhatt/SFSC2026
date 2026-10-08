@@ -557,7 +557,7 @@ def pipeline_lines(
     )
 
     structured_active = active_phase(events)
-    if structured_active == "validate":
+    if structured_active == "validate" or "validate" in complete_phases:
         detector_done = detector_total
         prompt_done = prompt_total
         semantic_epoch = semantic_total

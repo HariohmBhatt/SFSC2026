@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from pycocotools import mask as coco_mask
 
 
 @dataclass
@@ -23,23 +24,46 @@ def mask_iou(left: np.ndarray, right: np.ndarray) -> float:
     return float(intersection / union) if union else 0.0
 
 
+def mask_iou_matrix(candidates: Sequence[Candidate]) -> np.ndarray:
+    """Compute every pairwise mask IoU once using pycocotools' native code."""
+    if not candidates:
+        return np.empty((0, 0), dtype=np.float32)
+    encoded = [
+        coco_mask.encode(np.asfortranarray(row.mask.astype(np.uint8)))
+        for row in candidates
+    ]
+    return np.asarray(coco_mask.iou(encoded, encoded, [0] * len(encoded)))
+
+
 def weighted_mask_fusion(
     candidates: Sequence[Candidate], merge_iou: float = 0.72, threshold: float = 0.5
 ) -> list[Candidate]:
     """Fuse only strongly agreeing masks; preserve distinct touching filaments."""
+    if not candidates:
+        return []
+    overlaps = mask_iou_matrix(candidates)
     groups: list[list[Candidate]] = []
-    for candidate in sorted(candidates, key=lambda row: row.score, reverse=True):
+    group_indices: list[list[int]] = []
+    order = sorted(range(len(candidates)), key=lambda index: candidates[index].score, reverse=True)
+    for candidate_index in order:
+        candidate = candidates[candidate_index]
         best_index, best_iou = -1, 0.0
-        for index, group in enumerate(groups):
-            value = max(mask_iou(candidate.mask, member.mask) for member in group)
+        for index, members in enumerate(group_indices):
+            value = float(overlaps[candidate_index, members].max())
             if value > best_iou:
                 best_index, best_iou = index, value
         if best_iou >= merge_iou:
             groups[best_index].append(candidate)
+            group_indices[best_index].append(candidate_index)
         else:
             groups.append([candidate])
+            group_indices.append([candidate_index])
     fused = []
     for group in groups:
+        if len(group) == 1:
+            row = group[0]
+            fused.append(Candidate(row.mask.copy(), row.score, row.source, 1.0))
+            continue
         weights = np.asarray([max(row.score, 1e-4) for row in group], dtype=np.float32)
         probability = sum(
             row.mask.astype(np.float32) * weight for row, weight in zip(group, weights, strict=True)
@@ -61,23 +85,28 @@ def weighted_mask_fusion(
 
 
 def soft_mask_nms(candidates: Sequence[Candidate], iou_threshold: float = 0.55) -> list[Candidate]:
-    remaining = [
-        Candidate(row.mask.copy(), row.score, row.source, row.agreement) for row in candidates
-    ]
-    selected = []
-    while remaining:
-        remaining.sort(key=lambda row: row.score, reverse=True)
-        best = remaining.pop(0)
-        selected.append(best)
-        updated = []
-        for candidate in remaining:
-            overlap = mask_iou(best.mask, candidate.mask)
-            if overlap >= 0.9:
-                continue
-            candidate.score *= float(np.exp(-(overlap * overlap) / 0.5))
-            if overlap < iou_threshold or candidate.score >= 0.05:
-                updated.append(candidate)
-        remaining = updated
+    if not candidates:
+        return []
+    overlaps = mask_iou_matrix(candidates)
+    scores = np.asarray([row.score for row in candidates], dtype=np.float64)
+    remaining = np.ones(len(candidates), dtype=bool)
+    selected: list[Candidate] = []
+    while remaining.any():
+        live = np.flatnonzero(remaining)
+        best_index = int(live[np.argmax(scores[live])])
+        best = candidates[best_index]
+        selected.append(
+            Candidate(best.mask.copy(), float(scores[best_index]), best.source, best.agreement)
+        )
+        remaining[best_index] = False
+        live = np.flatnonzero(remaining)
+        if not live.size:
+            break
+        values = overlaps[best_index, live]
+        scores[live] *= np.exp(-(values * values) / 0.5)
+        keep = (values < iou_threshold) | (scores[live] >= 0.05)
+        keep &= values < 0.9
+        remaining[live[~keep]] = False
     return selected
 
 

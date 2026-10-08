@@ -420,6 +420,46 @@ def structured_eta_rows(
 ) -> list[str]:
     phase = progress.get("phase")
     unit = progress.get("unit")
+    if phase == "validate":
+        starts = [
+            event
+            for event in events
+            if event.get("phase") == "validate"
+            and event.get("event") == "phase_start"
+            and isinstance(event.get("time"), str)
+        ]
+        completed = [
+            event
+            for event in events
+            if event.get("phase") == "validate"
+            and event.get("event") == "progress"
+            and isinstance(event.get("time"), str)
+        ]
+        if not starts or not completed:
+            return []
+        previous = datetime.fromisoformat(str(starts[-1]["time"]))
+        durations = []
+        for event in completed:
+            finished = datetime.fromisoformat(str(event["time"]))
+            duration = (finished - previous).total_seconds()
+            if duration >= 2.0:  # Ignore near-instant Drive cache hits.
+                durations.append(duration)
+            previous = finished
+        if not durations:
+            return []
+        recent = durations[-8:]
+        image_seconds = sum(recent) / len(recent)
+        now = datetime.now(previous.tzinfo or UTC)
+        elapsed = max((now - previous).total_seconds(), 0.0)
+        current = int(progress.get("current", 0))
+        total = int(progress.get("total", 0))
+        remaining = max(image_seconds - elapsed, 0.0) + max(total - current - 1, 0) * image_seconds
+        finish = datetime.fromtimestamp(time.time() + remaining, IST)
+        return [
+            f"  Exact-PQ ETA {precise_duration(remaining)}  •  "
+            f"estimated finish {finish:%H:%M:%S IST}  •  "
+            f"{precise_duration(image_seconds)}/image"
+        ]
     if phase != "refiners" or not isinstance(unit, str):
         return []
     starts = [
@@ -517,6 +557,11 @@ def pipeline_lines(
     )
 
     structured_active = active_phase(events)
+    if structured_active == "validate":
+        detector_done = detector_total
+        prompt_done = prompt_total
+        semantic_epoch = semantic_total
+        complete_phases.update({"detectors", "prompts", "refiners", "semantic"})
     inferred_active = structured_active
     if inferred_active is None:
         if validation_event:
@@ -546,7 +591,9 @@ def pipeline_lines(
     )
     rows.append(
         f"  {marker('refiners', 'refiners' in complete_phases)} "
-        f"Prompt refiners       {len(refiner_units)}/{refiner_total} complete"
+        f"Prompt refiners       "
+        f"{refiner_total if 'refiners' in complete_phases else len(refiner_units)}/"
+        f"{refiner_total} complete"
     )
     rows.append(
         f"  {marker('semantic', 'semantic' in complete_phases)} "
@@ -686,7 +733,8 @@ def render(
     epoch_fraction = current.batch / max(current.batches, 1)
     overall = ((current.epoch - 1) + epoch_fraction) / max(current.epochs, 1)
     bar_width = max(20, min(62, width - 34))
-    eta = item_eta(run)
+    pipeline_phase = active_phase(current_pipeline_events(state.events))
+    eta = None if pipeline_phase == "validate" else item_eta(run)
     eta_lines: list[str] = []
     if eta is not None:
         remaining, full_item = eta

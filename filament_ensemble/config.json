@@ -13,6 +13,8 @@
   ],
   "detector_conf": 0.01,
   "detector_iou": 0.7,
+  "detector_candidates_per_view": 150,
+  "maximum_detector_candidates": 2700,
   "prompt_artifact": "artifacts/prompts-challenger-artifacts.zip",
   "require_real_prompts": true,
   "prompt_oof_detector": {
@@ -34,6 +36,8 @@
   "refiner_contexts": [1.35, 1.7, 2.1],
   "real_prompt_fraction": 0.7,
   "refiner_dihedral_tta": false,
+  "refiner_proposal_batch": 2,
+  "inference_amp": true,
   "maximum_refiner_proposals": 60,
   "refiner_epochs": 24,
   "refiner_steps_per_epoch": 400,

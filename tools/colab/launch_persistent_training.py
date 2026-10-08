@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -24,6 +25,13 @@ def write_json(path: Path, value: dict) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Launch a detached Drive-persistent pipeline")
+    parser.add_argument(
+        "--phase",
+        choices=("detectors", "prompts", "refiners", "semantic", "validate", "all"),
+        default="all",
+    )
+    args = parser.parse_args()
     listing = subprocess.run(
         ["ps", "-eo", "pid=,args="], capture_output=True, text=True, check=True
     ).stdout
@@ -35,8 +43,8 @@ def main() -> None:
 
     CONTROL.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    log_path = CONTROL / f"connected-all-{stamp}.log"
-    command = [sys.executable, "-u", "-m", "filament_ensemble.run", "--phase", "all"]
+    log_path = CONTROL / f"connected-{args.phase}-{stamp}.log"
+    command = [sys.executable, "-u", "-m", "filament_ensemble.run", "--phase", args.phase]
     environment = os.environ.copy()
     environment["PYTHONUNBUFFERED"] = "1"
     with log_path.open("ab", buffering=0) as log:

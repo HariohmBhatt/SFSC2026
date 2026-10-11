@@ -11,6 +11,8 @@ htmlcov/
 # Competition data must not be committed.
 SFSCDataset/
 data/
+*.zip
+sfsc2026-data.manifest.json
 
 # Generated model and experiment outputs.
 artifacts/

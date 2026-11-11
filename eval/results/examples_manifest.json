@@ -1,0 +1,55 @@
+{
+  "selection": "Nearest rank to V4 image PQ 10th/50th/90th percentiles; ascending PQ, filename tie-break",
+  "population": "all 707 OOF images",
+  "crop": "Largest first-record GT polygon bounding square +32px, minimum 192px; fixed before viewing",
+  "examples": [
+    {
+      "label": "Poor",
+      "quantile": 0.1,
+      "rank": 71,
+      "file_name": "20120427162614Mh.jpeg",
+      "pq": 0.2420247625,
+      "annotator_record_ids": [
+        "040102-20120427162614Mh"
+      ],
+      "crop_box_xyxy": [
+        1152,
+        1128,
+        1567,
+        1543
+      ]
+    },
+    {
+      "label": "Median",
+      "quantile": 0.5,
+      "rank": 353,
+      "file_name": "20140908231334Lh.jpeg",
+      "pq": 0.4613645789473684,
+      "annotator_record_ids": [
+        "050202-20140908231334Lh"
+      ],
+      "crop_box_xyxy": [
+        1368,
+        1364,
+        1733,
+        1729
+      ]
+    },
+    {
+      "label": "Good",
+      "quantile": 0.9,
+      "rank": 635,
+      "file_name": "20180827232530Lh.jpeg",
+      "pq": 0.61557074,
+      "annotator_record_ids": [
+        "060102-20180827232530Lh"
+      ],
+      "crop_box_xyxy": [
+        935,
+        340,
+        1355,
+        760
+      ]
+    }
+  ]
+}

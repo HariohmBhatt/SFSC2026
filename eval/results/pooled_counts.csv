@@ -1,0 +1,4 @@
+model,sum_iou,tp,fp,fn,split_gt,merge_pred,n_gt,n_pred,ambiguous_threshold_pairs
+inter_annotator,2719.666412,4292,3709,3709,249,249,7999,7999,4
+v3_rescored,3499.590339,5135,2207,3064,277,174,8199,7341,1
+v4_evidence,3577.160605,5258,2285,2941,210,173,8199,7542,1

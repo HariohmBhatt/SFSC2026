@@ -1,0 +1,19 @@
+# Direct dependencies for the final V3 -> V4 notebooks. Python 3.13 recommended.
+# Provenance and reconstruction caveats: docs/DEPENDENCIES.md.
+# Install requirements-colab-cuda.txt on L4 for the observed CUDA build.
+torch==2.11.0
+torchvision==0.26.0
+segmentation-models-pytorch==0.5.0
+timm==1.0.30
+ultralytics==8.4.175
+scikit-learn==1.6.1
+numpy==2.4.4
+scipy==1.17.1
+pandas==3.0.5
+Pillow==12.2.0
+# Ultralytics requires this distribution by name; avoid a second cv2 provider.
+opencv-python==4.14.0.94
+pycocotools==2.0.11
+matplotlib==3.10.8
+tqdm==4.67.1
+packaging==26.3

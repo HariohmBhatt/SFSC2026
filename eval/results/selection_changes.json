@@ -1,0 +1,6 @@
+{
+  "common_instances": 4230,
+  "added_v4": 382,
+  "removed_v3": 245,
+  "note": "Shared keeps use the same frozen V3 candidate masks; no geometry change."
+}

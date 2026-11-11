@@ -1,0 +1,7 @@
+{
+  "seed": 20261024,
+  "replicates": 2000,
+  "dates": 656,
+  "cluster": "UTC calendar date from filename; all sites, records, objects and directed human comparisons travel together",
+  "interval": "percentile 95%; frozen models, thresholds and examples; no refitting"
+}

@@ -1,0 +1,59 @@
+{
+  "selection": "Nearest rank to V4 image PQ 10th/50th/90th percentiles; ascending PQ, filename tie-break",
+  "population": "multi-record images only",
+  "crop": "Largest first-record GT polygon bounding square +32px, minimum 192px; fixed before viewing",
+  "examples": [
+    {
+      "label": "Poor",
+      "quantile": 0.1,
+      "rank": 30,
+      "file_name": "20110128174814Mh.jpeg",
+      "pq": 0.29270583384615384,
+      "annotator_record_ids": [
+        "010401-20110128174814Mh",
+        "010402-20110128174814Mh",
+        "010403-20110128174814Mh"
+      ],
+      "crop_box_xyxy": [
+        256,
+        1240,
+        518,
+        1502
+      ]
+    },
+    {
+      "label": "Median",
+      "quantile": 0.5,
+      "rank": 148,
+      "file_name": "20110510063134Lh.jpeg",
+      "pq": 0.4701961818181818,
+      "annotator_record_ids": [
+        "020401-20110510063134Lh",
+        "020403-20110510063134Lh"
+      ],
+      "crop_box_xyxy": [
+        1473,
+        575,
+        1666,
+        768
+      ]
+    },
+    {
+      "label": "Good",
+      "quantile": 0.9,
+      "rank": 266,
+      "file_name": "20121007131134Ch.jpeg",
+      "pq": 0.6041203714285714,
+      "annotator_record_ids": [
+        "050101-20121007131134Ch",
+        "050103-20121007131134Ch"
+      ],
+      "crop_box_xyxy": [
+        392,
+        1440,
+        722,
+        1770
+      ]
+    }
+  ]
+}

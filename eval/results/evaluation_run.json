@@ -1,0 +1,9 @@
+{
+  "code_sha256": "b140ea20573a05545595f50fbd179f290e6540a62262e607f34c2d68d795ae2d",
+  "mask_manifest_sha256": "2b570484c9b75b29204ddd453c5e53fc72dacf1343137dcaa53760701b111481",
+  "elapsed_seconds": 247.5876205218956,
+  "workers": 4,
+  "images": 707,
+  "gpu_hours": 0,
+  "colab_cu": 0
+}

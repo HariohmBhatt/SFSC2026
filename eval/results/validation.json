@@ -1,0 +1,21 @@
+{
+  "table_consistency": "passed",
+  "coverage_and_gap_invariants": "passed",
+  "human_reference_counts": "passed",
+  "bootstrap_ci_tables": "passed",
+  "report_figures": "passed",
+  "eval_bytes": 15931292,
+  "native_oof_images": 707,
+  "annotator_records": 1154,
+  "gt_objects": 8199,
+  "human_images": 296,
+  "human_directed_comparisons": 1196,
+  "analytic_checks": "6 passed",
+  "notebook_execution": "passed",
+  "gpu_hours": 0,
+  "colab_cu": 0,
+  "notebook_code_cells_executed": 7,
+  "notebook_errors": 0,
+  "inline_html_preview": "unavailable: host AppArmor blocks T3 preview browser; scientific PNGs visually inspected",
+  "standalone_html": "self-contained images embedded; four figure tabs"
+}

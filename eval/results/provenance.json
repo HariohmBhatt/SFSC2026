@@ -1,0 +1,31 @@
+{
+  "annotation_sha256": "5da9e92b5a1a1947fd5d57adb6688269625c48ec1ef884daf2a01618c9ed54a1",
+  "image_stats_sha256": "9a464519e5dce75b5ba0f0455897f22dbdcd3ef10d36e7b537bd4bd8220b72a2",
+  "selection_sha256": "d69a74a6b1212801d7856b5d08ac85353e45d381dc35bca2879719ad85062d6e",
+  "geometry_module_sha256": "c8f9e7cd01d120f44bcada0cb2780190a3ce1aeed134b5572e7ae5de2cc42ac3",
+  "fusion_run": "/home/hariohm/sfsc_work/v5fusion/drive_mirror/outputs/sfsc_v5/fusion_sfsc_unet_v3_aug",
+  "maps": "/home/hariohm/sfsc_work/v5fusion/maps/sfsc_unet_v3_aug",
+  "images": 707,
+  "full_images": 707,
+  "records": 1154,
+  "geometry": {
+    "t_low": 0.4,
+    "contact": 0.5,
+    "offset": -1,
+    "fill_holes": true,
+    "min_core_area": 16,
+    "contact_assign_radius": 6.0,
+    "connectivity": 8
+  },
+  "scorer_refitted": false,
+  "gpu_hours": 0,
+  "colab_cu": 0,
+  "mask_directory": "/home/hariohm/sfsc_work/morph/masks",
+  "native_shape": [
+    2048,
+    2048
+  ],
+  "date_folds_disjoint": true,
+  "map_source": "staged uint8 V3 OOF maps; original NPZ fallback",
+  "seed": 20261024
+}

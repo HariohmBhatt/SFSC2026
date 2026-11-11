@@ -1,0 +1,32 @@
+{
+ "voronoi: 2 cells from consensus components only (weak one excluded)": true,
+ "voronoi: component pixels carry their own id": true,
+ "voronoi: empty crop -> all zero": true,
+ "voronoi: nearest-component assignment": true,
+ "missed GT: loss ~ 1 (1 - Dice of an empty prediction)": true,
+ "missed GT: dL/dlogit < 0 on every GT pixel": true,
+ "missed GT: no FP components": true,
+ "perfect prediction: loss ~ 0": true,
+ "FP blob: counted once": true,
+ "FP blob: loss = 2(a*sum e + (1-a)*sum f)/(K+J)": true,
+ "FP blob: dL/dlogit > 0 on blob pixels": true,
+ "soft target: blob over sub-consensus support is not an FP": true,
+ "soft target: sub-consensus filament is not a GT cell either": true,
+ "soft target: blob touching one supported pixel is not an FP": true,
+ "soft target: annotation side is finite and in [0,1] for 2/3 consensus": true,
+ "size-independent: one of two components missed -> loss ~ 0.5": true,
+ "batch: ids do not mix across samples (K=2, J=1)": true,
+ "batch: blob gradient only in its own sample": true,
+ "empty batch: loss 0, finite gradient": true,
+ "random soft targets + random logits: finite": true,
+ "saturated logits (+30) on a full target: finite, ~0": true,
+ "reference agreement (binary target, trial 0)": true,
+ "reference agreement (binary target, trial 1)": true,
+ "reference agreement (binary target, trial 2)": true,
+ "reference agreement (binary target, trial 3)": true,
+ "reference agreement (binary target, trial 4)": true,
+ "timing_ms": {
+  "voronoi_per_crop": 45.7,
+  "bicc_fwd_bwd_8x768_cpu": 287.9
+ }
+}

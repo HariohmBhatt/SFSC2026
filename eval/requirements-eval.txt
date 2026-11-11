@@ -1,0 +1,9 @@
+# CPU evaluation only. Exact measured versions are in results/environment.json.
+# Bounded ranges let pip choose wheels compatible with the Colab Python runtime.
+numpy>=1.26,<2.6
+scipy>=1.11,<1.19
+pandas>=2.0,<3.1
+scikit-image>=0.22,<0.27
+pycocotools==2.0.11
+matplotlib>=3.8,<3.12
+pillow>=10,<13

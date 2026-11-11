@@ -1,0 +1,10 @@
+{
+  "reconstruction_wall_seconds": 334.49262833595276,
+  "morphology_wall_seconds": 247.64604544639587,
+  "bootstrap_wall_seconds": 5.574069261550903,
+  "final_notebook_wall_seconds": 30.228730496019125,
+  "local_workers": 4,
+  "gpu_hours": 0,
+  "colab_cu": 0,
+  "vm_started": false
+}

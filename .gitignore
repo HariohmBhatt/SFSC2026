@@ -35,3 +35,34 @@ wandb/
 
 # Scraped competition activity: cached notebook sources and watch state.
 reports/competition_watch/
+
+# Private credentials, service-account keys, and local agent configuration.
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+kaggle.json
+service-account*.json
+rclone.conf
+.claude/
+.codex/
+.agents/
+
+# Local development state and generated benchmark measurements.
+.mypy_cache/
+.cache/
+benchmark_outputs/
+*.safetensors
+*.ckpt
+*.pkl
+*.pickle
+*.joblib
+*.tar
+*.tar.gz
+*.7z
+*.part
+
+# Internal working notes (not published).
+internal/
+*.blg

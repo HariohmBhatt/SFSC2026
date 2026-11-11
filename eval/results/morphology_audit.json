@@ -1,0 +1,83 @@
+{
+  "inter_annotator": {
+    "images": 296,
+    "records_or_directed_comparisons": 1196,
+    "gt_objects": 7999,
+    "pred_objects_record_weighted": 7999,
+    "missing_spines": 0,
+    "unique_pred_masks": 4993,
+    "gt_unmatched_one_to_one": 3711,
+    "pred_unmatched_one_to_one": 3711,
+    "gt_unmatched_official": 3709,
+    "pred_unmatched_official": 3709,
+    "valid_matched_length_ratios": 4288,
+    "zero_length_pred_skeletons": 0,
+    "gt_shape_mean": {
+      "gt_area": 2282.999874984373,
+      "spine_length": 152.92369790273784,
+      "gt_width": 13.153063700874608,
+      "gt_elongation": 5.0774702096387045
+    },
+    "pred_shape_mean": {
+      "area": 2282.999874984373,
+      "skeleton_length": 211.10298948851107,
+      "width_area_length": 10.224853001050132,
+      "width_edt": 10.258203331166397,
+      "elongation": 5.0774702096387045
+    }
+  },
+  "v3_rescored": {
+    "images": 707,
+    "records_or_directed_comparisons": 1154,
+    "gt_objects": 8199,
+    "pred_objects_record_weighted": 7341,
+    "missing_spines": 0,
+    "unique_pred_masks": 4475,
+    "gt_unmatched_one_to_one": 3065,
+    "pred_unmatched_one_to_one": 2207,
+    "gt_unmatched_official": 3064,
+    "pred_unmatched_official": 2207,
+    "valid_matched_length_ratios": 5134,
+    "zero_length_pred_skeletons": 0,
+    "gt_shape_mean": {
+      "gt_area": 2119.8349798755944,
+      "spine_length": 147.43087404720086,
+      "gt_width": 12.739514785154043,
+      "gt_elongation": 5.096361648810831
+    },
+    "pred_shape_mean": {
+      "area": 2008.2332107342324,
+      "skeleton_length": 176.7717773239341,
+      "width_area_length": 10.149934642473777,
+      "width_edt": 10.435775774621986,
+      "elongation": 5.355482744503474
+    }
+  },
+  "v4_evidence": {
+    "images": 707,
+    "records_or_directed_comparisons": 1154,
+    "gt_objects": 8199,
+    "pred_objects_record_weighted": 7542,
+    "missing_spines": 0,
+    "unique_pred_masks": 4612,
+    "gt_unmatched_one_to_one": 2942,
+    "pred_unmatched_one_to_one": 2285,
+    "gt_unmatched_official": 2941,
+    "pred_unmatched_official": 2285,
+    "valid_matched_length_ratios": 5257,
+    "zero_length_pred_skeletons": 0,
+    "gt_shape_mean": {
+      "gt_area": 2119.8349798755944,
+      "spine_length": 147.43087404720086,
+      "gt_width": 12.739514785154043,
+      "gt_elongation": 5.096361648810831
+    },
+    "pred_shape_mean": {
+      "area": 1973.2012728719174,
+      "skeleton_length": 173.70361424887298,
+      "width_area_length": 10.130544833214003,
+      "width_edt": 10.402894172805622,
+      "elongation": 5.324827467727393
+    }
+  }
+}

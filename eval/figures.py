@@ -161,7 +161,8 @@ def plot_examples(dataset,scratch,results,multi_record=False):
                     if len(p):ax.plot(p[:,0]-x0-.5,p[:,1]-y0-.5,color="#ffe46b",lw=.65)
                 ax.set(xlim=(-.5,x1-x0-.5),ylim=(y1-y0-.5,-.5))
                 if col==0:
-                    ax.text(0,1.02,f"{example['label']} · PQ {example['pq']:.3f}",transform=ax.transAxes,fontsize=7,va="bottom")
+                    ax.text(.03,.97,f"{example['label']} · PQ {example['pq']:.3f}",transform=ax.transAxes,fontsize=6.5,va="top",ha="left",
+                            color="white",bbox=dict(boxstyle="round,pad=.2",fc="black",ec="none",alpha=.6))
                     ax.set_ylabel(name.replace(".jpeg",""),fontsize=5.5,labelpad=3)
             # Native scale bar on prediction panel in both views.
             ax=axs[row,-1];length=50 if zoom else 500

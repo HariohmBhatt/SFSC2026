@@ -31,7 +31,6 @@
 % ---- report-local additions (kept here so preamble.tex stays as distributed) ----
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta,fit}
-\newcommand{\todo}[1]{{\color{red}\textbf{[TODO: #1]}}}   % must be empty before the final upload
 \setlength{\emergencystretch}{1.5em}
 \graphicspath{{figures/}{../eval/results/}{../eval/results/figures/}}
 % Include a figure if it exists, otherwise draw a labelled placeholder box.
@@ -50,11 +49,16 @@
 
 \author{Hariohm Bhatt}
 \affiliation{%
-  \institution{\todo{institution, or delete line}}
-  \city{\todo{city}}
-  \country{\todo{country}}
+  \institution{Independent Researcher}
+  \country{India}
 }
 \email{bhatthariohm2004@gmail.com}   % <- Replace with your own email
+
+\author{Dhairya Doshi}
+\affiliation{%
+  \institution{Independent Researcher}
+  \country{India}
+}
 
 \begin{abstract}
     This report describes our solution to the Solar Filament Segmentation Challenge~2026, a Kaggle competition on automatic segmentation of solar filaments in GONG H-$\alpha$ observations. A four-fold UNet with an EfficientNetV2-S encoder, trained on soft multi-annotator targets with an auxiliary contact head, draws every mask; a four-fold YOLO11m-seg detector supplies existence evidence and a few extra candidates; and a gradient-boosted scorer, fitted out-of-fold, keeps a candidate only when its predicted contribution to panoptic quality (PQ) exceeds the break-even value. On date-grouped, cross-fitted out-of-fold (OOF) validation over all 707 training images (1154 annotator records) the final system reaches PQ 0.455 (SQ 0.682, RQ 0.668), against 0.448 for the UNet alone and an inter-annotator agreement of 0.340; the public leaderboard score is 0.40. We document the error structure by filament size, disk position and annotator support, the morphology of the predicted masks, and every post-V4 idea that failed our pre-registered acceptance rule.
@@ -235,13 +239,14 @@ multi-level augmented scorer & $+.0011$ & $-.0013..+.0036$, 3/4\\
 V3--R34 agreement features & $-.0006$ & $-.0027..+.0014$, 2/4\\
 external detector~\cite{peer_saltytaro} replaces ours & $+.0001$ & $-.0026..+.0028$, 2/4\\
 external detector~\cite{peer_saltytaro} added & $+.0010$ & $-.0015..+.0036$, 2/4\\
+BiCC loss on V3, w$=$0.3 (f0) & $+.0045$ & $-.0028..+.0119^{\dagger}$, 2/4\\
 \bottomrule
 \end{tabular}}
 \end{table}
 
-\textbf{Efficiency.} All training ran on single NVIDIA L4 GPUs (Colab). The four YOLO11m-seg folds took 0.951--0.957\,h each, 3.82 L4-h in total (measured from logs). For the UNet we infer ${\approx}5.8$ L4-h for training (${\approx}130$\,s per epoch $\times$ 40 epochs $\times$ 4 folds) and ${\approx}1.4$ L4-h for the OOF and test maps; the full retraining therefore needs about 11 L4-h (an estimate; the UNet run logs were not retained). Per test image, inference performs 288 UNet tile passes (4 models $\times$ 8 views $\times$ 9 tiles) and 4 detector passes; fusion, scoring and RLE export need no GPU. Measured end-to-end inference time: \todo{s/image and peak memory from the inference benchmark notebook (docs/EFFICIENCY.md)}.
+\textbf{Efficiency.} All training ran on single NVIDIA L4 GPUs (Colab). The four YOLO11m-seg folds took 0.951--0.957\,h each, 3.82 L4-h in total (measured from logs). For the UNet we infer ${\approx}5.8$ L4-h for training (${\approx}130$\,s per epoch $\times$ 40 epochs $\times$ 4 folds) and ${\approx}1.4$ L4-h for the OOF and test maps; the full retraining therefore needs about 11 L4-h (an estimate; the UNet run logs were not retained). Per test image, inference performs 288 UNet tile passes (4 models $\times$ 8 views $\times$ 9 tiles) and 4 detector passes; fusion, scoring and RLE export need no GPU. Inference cost is therefore dominated by the UNet tile passes; we did not record a separate end-to-end timing run (a benchmark notebook is provided in the repository).
 
-\textbf{Strengths, limitations and next steps.} Strengths: every number is cross-fitted and date-grouped, the decision rule is PQ-optimal by construction, masks are disjoint and audited, and all thresholds come from OOF data. Limitations: tiny and limb filaments are often missed; near-misses on large filaments (17.9\%) are boundary-extent disagreements our refiners did not fix; the 0.056 OOF-to-public gap is unexplained beyond the channels we could measure; no annotator identity is available at test time, so per-annotator style cannot be modelled. Promising directions are instance-native mask heads that improve SQ on matched pairs, and losses that penalize false components (BiCC~\cite{bouteille2026bicc}). Code and reproducing notebooks: \todo{public repo URL}.
+\textbf{Strengths, limitations and next steps.} Strengths: every number is cross-fitted and date-grouped, the decision rule is PQ-optimal by construction, masks are disjoint and audited, and all thresholds come from OOF data. Limitations: tiny and limb filaments are often missed; near-misses on large filaments (17.9\%) are boundary-extent disagreements our refiners did not fix; the 0.056 OOF-to-public gap is unexplained beyond the channels we could measure; no annotator identity is available at test time, so per-annotator style cannot be modelled. The most promising direction is an instance-native mask head that improves SQ on matched pairs; component-level losses such as BiCC~\cite{bouteille2026bicc} reduced false positives but did not pass our rule. Code, reproducing notebooks and evaluation outputs: \url{https://github.com/HariohmBhatt/SFSC2026} (AGPL-3.0).
 
 % ==================================== %
 %            ACKNOWLEDGMENT            %

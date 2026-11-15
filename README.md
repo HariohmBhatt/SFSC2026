@@ -1,6 +1,6 @@
 # SFSC 2026: Solar Filament Instance Segmentation
 
-Our solution (team **ChaiPani**) to the [Solar Filament Segmentation Challenge 2026](https://www.kaggle.com/competitions/filament-segmentation-2026/overview) on Kaggle. The task is to find each individual solar filament in 2048 × 2048 GONG H-α full-disk images, scored by panoptic quality (PQ) against one to three independent human annotators.
+Our solution (team **ChaiPani**: Hariohm Bhatt and Dhairya Doshi) to the [Solar Filament Segmentation Challenge 2026](https://www.kaggle.com/competitions/filament-segmentation-2026/overview) on Kaggle. The task is to find each individual solar filament in 2048 × 2048 GONG H-α full-disk images, scored by panoptic quality (PQ) against one to three independent human annotators.
 
 The final system (**V4**) has three parts:
 
